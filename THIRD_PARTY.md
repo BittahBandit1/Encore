@@ -33,7 +33,7 @@ Written for Nativ in Python after these projects' code, which they credit in the
 
 The install scripts (`dev/macos-install.sh`, `dev/linux-install.sh`, `dev/windows-install.sh`) add these, so a
 player's machine needs nothing else. Each sits in the install with its licence (on a Mac the install is inside the app:
-`Project Nativ.app/Contents/Resources/`).
+`Encore.app/Contents/Resources/`).
 
 | Software | Version | Licence | Where in an install |
 |---|---|---|---|
