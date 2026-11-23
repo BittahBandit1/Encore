@@ -919,7 +919,7 @@ def cmd_report(T):
     f5 = sorted(glob.glob(os.path.join(glob.escape(OUT), "captures", "f5_*")), key=os.path.getmtime)
     f5 = f5[-1] if f5 else ""
     stamp = lambda p: time.strftime("%Y-%m-%d %H:%M", time.localtime(os.path.getmtime(p)))
-    about = [("game", f"{name} ({T}), version {version}"), ("Project Nativ", nativ)] + _machine() + \
+    about = [("game", f"{name} ({T}), version {version}"), ("Encore (Project Nativ)", nativ)] + _machine() + \
         [(n, f"written {stamp(p)}") for p, n in files if os.path.isfile(p)] + \
         ([("F5 frame history", f"{os.path.basename(f5)}, saved {stamp(f5)}")] if f5 else [("F5 frame history", "none saved")])
     os.makedirs(os.path.join(DUMP, "reports"), exist_ok=True)

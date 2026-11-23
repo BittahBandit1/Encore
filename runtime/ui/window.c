@@ -893,7 +893,7 @@ void window_run(void *(*fn)(void *), void *arg) {
 	}
 	int scale = getenv("RECOMP_SCALE") ? atoi(getenv("RECOMP_SCALE")) : 1;
 	if (scale < 1) scale = 1;
-	{ const char *name = getenv("RECOMP_GAME_NAME"); win = SDL_CreateWindow(name && *name ? name : "Project Nativ", 960 * scale, 544 * scale, SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY); }
+	{ const char *name = getenv("RECOMP_GAME_NAME"); win = SDL_CreateWindow(name && *name ? name : "Encore", 960 * scale, 544 * scale, SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY); }
 	{	/* the app icon (assets/brand): the install's, as vitarecomp run names it (an AppImage's moves on every start), else
 		 * the one the build saw */
 		const char *ip = getenv("RECOMP_ICON");

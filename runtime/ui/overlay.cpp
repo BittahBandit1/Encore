@@ -378,7 +378,7 @@ static void page_game(void) {
 		if (ui::segmented(names, 3, &v)) { settings_set_int("controller_layout", v); settings_save(); }
 	}
 	if (game_option("online")) {
-		ui::row("Play online", "The game's online modes with other Project Nativ players, on your network and over the internet. They see your online name and your computer's IP address, as in any peer-to-peer game. Applies the next time the game starts.");
+		ui::row("Play online", "The game's online modes with other Encore players, on your network and over the internet. They see your online name and your computer's IP address, as in any peer-to-peer game. Applies the next time the game starts.");
 		if (net_online_needs()) { char t[128]; snprintf(t, sizeof t, "Needs update %s: this copy is another version, and rooms only match their own. Add the update in the launcher.", net_online_needs()); ImGui::TextWrapped("%s", t); }
 		else { bool on = settings_int("online", 1) != 0; if (ui::toggle("online", &on)) { settings_set_int("online", on ? 1 : 0); settings_save(); } }
 		if (net_online()) {   /* how it stands (status.c), every half second */
@@ -506,7 +506,7 @@ static void page_help(void) {
 		ImVec2 p = ImGui::GetCursorScreenPos(); const float h = ImGui::GetFontSize() * 1.5f;
 		ImGui::Dummy(ImVec2(ui::wordmark(ImGui::GetWindowDrawList(), p, h), h));
 	}
-	ImGui::TextWrapped("Project Nativ: this PS Vita game, statically recompiled to native code, running on this computer's own CPU and GPU.");
+	ImGui::TextWrapped("Encore (built on Project Nativ): this PS Vita game, statically recompiled to native code, running on this computer's own CPU and GPU.");
 	const char *title = std::getenv("RECOMP_TITLE");
 	int v = SDL_GetVersion();
 	ImGui::TextDisabled("%s  ·  Dear ImGui %s  ·  SDL %d.%d.%d", title && *title ? title : "unknown title", IMGUI_VERSION, SDL_VERSIONNUM_MAJOR(v), SDL_VERSIONNUM_MINOR(v), SDL_VERSIONNUM_MICRO(v));
@@ -536,7 +536,7 @@ static void build_ui(void) {
 	ImGui::Begin("##menu", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoScrollbar);
 	ImGui::PopStyleColor();
 	/* header: the game, Paused, Resume */
-	{	const char *name = std::getenv("RECOMP_GAME_NAME"); if (!name || !*name) name = std::getenv("RECOMP_TITLE"); if (!name || !*name) name = "Project Nativ";
+	{	const char *name = std::getenv("RECOMP_GAME_NAME"); if (!name || !*name) name = std::getenv("RECOMP_TITLE"); if (!name || !*name) name = "Encore";
 		ui::heading(name, em * 1.35f);
 		ImGui::SameLine(0, em * 0.7f); ImGui::SetCursorPosY(ImGui::GetCursorPosY() + em * 0.18f); ui::chip("Paused", ui::accent);
 		float rw = ImGui::CalcTextSize("Resume").x + ImGui::GetStyle().FramePadding.x * 2;

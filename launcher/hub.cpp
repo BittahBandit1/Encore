@@ -664,8 +664,8 @@ static void licence_help_popup(void) {
 	ui::muted_wrapped("A PKG never carries one: PSN keeps a licence for each owner, and the PKG is the same file for everyone. Your Vita has yours:");
 	ImGui::Bullet(); ImGui::TextWrapped("A game installed from its PKG: its folder holds the licence, ux0:app/<title>/sce_sys/package/work.bin. Copy the whole game folder and nothing else is needed.");
 	ImGui::Bullet(); ImGui::TextWrapped("A game bought and installed the usual way: with the NoNpDrm plugin on, start the game once. Its licence is then saved as a .rif file in ux0:nonpdrm/license/app/<title>/.");
-	ImGui::Bullet(); ImGui::TextWrapped("Copy that file (or the whole ux0:nonpdrm folder) next to your PKG and search the folder: Nativ matches each licence to its game.");
-	ui::muted_wrapped("Easiest: Licences, From my Vita… fetches them all at once over Wi-Fi. Nativ keeps your licences on this computer only.");
+	ImGui::Bullet(); ImGui::TextWrapped("Copy that file (or the whole ux0:nonpdrm folder) next to your PKG and search the folder: Encore matches each licence to its game.");
+	ui::muted_wrapped("Easiest: Licences, From my Vita… fetches them all at once over Wi-Fi. Encore keeps your licences on this computer only.");
 	ImGui::PopTextWrapPos();
 	ImGui::EndPopup();
 }
@@ -696,7 +696,7 @@ static void vita_licences_popup(void) {
 	const float em = ImGui::GetFontSize();
 	ImGui::PushTextWrapPos(em * 28);
 	ImGui::TextUnformatted("Get your licences from your Vita");
-	ui::muted_wrapped("Your Vita and this computer on the same network. Nativ reads only licence files, nothing else.");
+	ui::muted_wrapped("Your Vita and this computer on the same network. Encore reads only licence files, nothing else.");
 	ImGui::TextWrapped("1. On the Vita, open VitaShell and press SELECT. It shows an address like ftp://192.168.0.50:1337.");
 	ImGui::TextWrapped("2. Type that address here:");
 	if (g_vita_addr.empty()) g_vita_addr = g_prefs["vita_address"];
@@ -973,7 +973,7 @@ static void ini_save(const Ini &x, const std::string &path, const char *header) 
 #endif
 	}
 }
-static const char *const SHARED_HEADER = "# Project Nativ's settings for every game (the launcher's Settings, and each game's menu; runtime/core/settings.h)";
+static const char *const SHARED_HEADER = "# Encore's settings for every game (the launcher's Settings, and each game's menu; runtime/core/settings.h)";
 static const char *const GAME_HEADER = "# vitarecomp settings for this game: its own options, and where it differs from the shared settings (runtime/core/settings.h)";
 static bool game_key(const std::string &k) {   /* (settings.c's game_key: kept in the game's own file) */
 	for (const char *g : {"fov", "view_distance", "scenery_detail", "character_detail", "private_server", "net_redirect", "menu_hint_shown", "controller_layout", "texture_pack"}) if (k == g) return true;
@@ -1112,7 +1112,7 @@ static std::string online_status_line(void) {
 	}
 	return b;
 }
-static const char *ONLINE_EXPL = "Games' online modes (Killzone: Mercenary, Unit 13) with other Project Nativ players, on your network and over the internet. They see your online name and your computer's IP address, as in any peer-to-peer game.";
+static const char *ONLINE_EXPL = "Games' online modes with other Encore players, on your network and over the internet. They see your online name and your computer's IP address, as in any peer-to-peer game.";
 static bool online_name_ok(const std::string &n) {
 	return n.size() <= 10 && std::all_of(n.begin(), n.end(), [](char c) { return isalnum((unsigned char)c) || c == '-' || c == '_'; });
 }
@@ -1317,7 +1317,7 @@ static void online_name_modal(void) {
 	if (!g) { g_name_game.clear(); ImGui::CloseCurrentPopup(); ImGui::EndPopup(); return; }
 	ui::heading("Your online name", em * 1.4f);
 	ImGui::PushTextWrapPos(0);
-	ImGui::TextUnformatted((g->name + " plays online with other Project Nativ players. Choose the name they'll see: it shows as ntv_ and your name.").c_str());
+	ImGui::TextUnformatted((g->name + " plays online with other Encore players. Choose the name they'll see: it shows as ntv_ and your name.").c_str());
 	ImGui::Dummy(ImVec2(0, em * 0.3f));
 	ImGui::AlignTextToFramePadding(); ImGui::TextUnformatted("ntv_"); ImGui::SameLine(0, 0);
 	if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
@@ -1354,7 +1354,7 @@ static void sac_modal(void) {
 	ImGui::PushTextWrapPos(0);
 	ImGui::TextUnformatted(g_sac_rebuilt ? "Windows' Smart App Control refused the rebuilt game too." : "Windows' Smart App Control refused to start it.");
 	ImGui::Dummy(ImVec2(0, em * 0.3f));
-	ImGui::TextUnformatted("Smart App Control checks each program Windows doesn't know with Microsoft's cloud, and every game Nativ builds is "
+	ImGui::TextUnformatted("Smart App Control checks each program Windows doesn't know with Microsoft's cloud, and every game Encore builds is "
 	                       "new to it, because it's built on this PC from your own copy. Its verdict is made once for each file, and now and "
 	                       "then it refuses one. A rebuild makes a new file that Windows checks afresh, and that usually starts.");
 	ImGui::Dummy(ImVec2(0, em * 0.3f));
@@ -1423,13 +1423,13 @@ static void setup_modal(SDL_Window *win) {
 			ui::wordmark(dl, ImVec2(p.x + lw * 0.25f, p.y + lw * 310 / 600), lw / 6);
 			ImGui::Dummy(ImVec2(lw, lw * 420 / 600 + em * 0.4f));
 		}
-		ui::heading("Welcome to Project Nativ", em * 1.55f);
-		ImGui::TextWrapped("Nativ rebuilds the PS Vita games you own as native programs for this computer — sharper, wider and faster than the console could run them.");
+		ui::heading("Welcome to Encore", em * 1.55f);
+		ImGui::TextWrapped("Encore rebuilds your Persona Dancing games for PS Vita as native programs for this computer — sharper and smoother than the console could run them.");
 		ImGui::Dummy(ImVec2(0, em * 0.3f));
 		ImGui::TextWrapped("It ships no Sony or game code. You bring two things, and they stay on this computer:");
 		ImGui::Bullet(); ImGui::TextWrapped("The PS Vita system software (firmware) update file — free, from Sony's own website.");
 		ImGui::Bullet(); ImGui::TextWrapped("Your own copies of your games and their updates: game folders copied from your Vita, or PKGs, or a whole folder to search.");
-		ImGui::Bullet(); ImGui::TextWrapped("Their licences: a game folder from your Vita carries its own. For PKGs, Nativ fetches yours from your Vita over Wi-Fi, once.");
+		ImGui::Bullet(); ImGui::TextWrapped("Their licences: a game folder from your Vita carries its own. For PKGs, Encore fetches yours from your Vita over Wi-Fi, once.");
 		ui::muted_wrapped("Each game plays as one exact release: the US version, at the versions its card lists (Killzone: 1.00 or its 1.12 update). Other regions and versions are recognised and named, but not supported yet.");
 		ImGui::Dummy(ImVec2(0, em * 0.6f));
 		if (ui::primary_button("Get started")) g_setup_step = 1;
@@ -1673,7 +1673,7 @@ static void hub_ui(SDL_Window *win) {
 		if (bad) {   /* the install is missing files (files_check_start) */
 			ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(ui::warn.x, ui::warn.y, ui::warn.z, 0.10f));
 			ImGui::BeginChild("filesnote", ImVec2(0, 0), ImGuiChildFlags_AutoResizeY | ImGuiChildFlags_AlwaysUseWindowPadding);
-			ui::dot(ui::warn); ImGui::TextWrapped("Project Nativ is missing %d of its files (the first: %s), so adding games and building them will fail. Unpack the whole zip again into an empty folder, and wait until it has finished. If files go missing again, your antivirus may be removing them.", bad, first.c_str());
+			ui::dot(ui::warn); ImGui::TextWrapped("Encore is missing %d of its files (the first: %s), so adding games and building them will fail. Unpack the whole zip again into an empty folder, and wait until it has finished. If files go missing again, your antivirus may be removing them.", bad, first.c_str());
 			if (ImGui::Button("Not now##files")) { std::lock_guard<std::mutex> l(g_files.m); g_files.dismissed = true; }
 			ImGui::EndChild(); ImGui::PopStyleColor();
 		}
@@ -1683,9 +1683,9 @@ static void hub_ui(SDL_Window *win) {
 			ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(ui::accent.x, ui::accent.y, ui::accent.z, 0.10f));
 			ImGui::BeginChild("updnote", ImVec2(0, 0), ImGuiChildFlags_AutoResizeY | ImGuiChildFlags_AlwaysUseWindowPadding);
 #ifdef __APPLE__
-			ui::dot(ui::accent); ImGui::TextWrapped("Project Nativ %s is out. Download it and drag it into Applications, replacing this one: your games, saves and settings stay as they are.", tag.c_str());
+			ui::dot(ui::accent); ImGui::TextWrapped("Encore %s is out. Download it and drag it into Applications, replacing this one: your games, saves and settings stay as they are.", tag.c_str());
 #else
-			ui::dot(ui::accent); ImGui::TextWrapped("Project Nativ %s is out. Download it and replace this folder with it: your games, saves and settings stay as they are.", tag.c_str());
+			ui::dot(ui::accent); ImGui::TextWrapped("Encore %s is out. Download it and replace this folder with it: your games, saves and settings stay as they are.", tag.c_str());
 #endif
 			if (ui::primary_button("Download")) SDL_OpenURL(page.c_str());
 			ImGui::SameLine(); if (ImGui::Button("Not now")) { std::lock_guard<std::mutex> l(g_update.m); g_update.dismissed = true; }
@@ -1724,7 +1724,7 @@ static void hub_ui(SDL_Window *win) {
 			ImGui::AlignTextToFramePadding(); ImGui::PushStyleColor(ImGuiCol_TextLink, ui::muted);
 			if (ImGui::TextLink("Support Nativ")) SDL_OpenURL(SUPPORT_PAGE);
 			ImGui::PopStyleColor();
-			if (ImGui::IsItemHovered()) ImGui::SetTooltip("Nativ is free. If you'd like to support its development, you can leave a tip on Ko-fi.");
+			if (ImGui::IsItemHovered()) ImGui::SetTooltip("Encore is built on Project Nativ, which is free. To support Nativ's developer, you can leave a tip on Ko-fi.");
 			ImGui::SameLine(0, sty.ItemSpacing.x * 2);
 		}
 	}
@@ -1877,7 +1877,7 @@ static bool mac_preflight(void) {
 	const bool in_place = g_root.find("/AppTranslocation/") == std::string::npos && !(statfs(g_root.c_str(), &fs) == 0 && (fs.f_flags & MNT_RDONLY));
 	if (!in_place) {
 		const SDL_MessageBoxButtonData b[2] = {{SDL_MESSAGEBOX_BUTTON_RETURNKEY_DEFAULT, 1, "Open Applications"}, {SDL_MESSAGEBOX_BUTTON_ESCAPEKEY_DEFAULT, 0, "Quit"}};
-		const SDL_MessageBoxData m = {SDL_MESSAGEBOX_INFORMATION, nullptr, "Project Nativ", "Drag Project Nativ into your Applications folder first, then open it from there.", 2, b, nullptr};
+		const SDL_MessageBoxData m = {SDL_MESSAGEBOX_INFORMATION, nullptr, "Encore", "Drag Encore into your Applications folder first, then open it from there.", 2, b, nullptr};
 		int hit = 0; SDL_ShowMessageBox(&m, &hit);
 		if (hit == 1) SDL_OpenURL("file:///Applications");
 		return false;
@@ -1887,7 +1887,7 @@ static bool mac_preflight(void) {
 	if (getxattr(app.c_str(), "com.apple.quarantine", nullptr, 0, 0, 0) >= 0) (void)!system(("xattr -dr com.apple.quarantine '" + app + "' 2>/dev/null").c_str());
 	if (system("xcode-select -p >/dev/null 2>&1") != 0) {
 		(void)!system("xcode-select --install >/dev/null 2>&1");
-		SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_INFORMATION, "Project Nativ", "Project Nativ builds each game on your Mac with Apple's free Command Line Tools.\n\nInstall them from the window that just opened, then open Project Nativ again.", nullptr);
+		SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_INFORMATION, "Encore", "Encore builds each game on your Mac with Apple's free Command Line Tools.\n\nInstall them from the window that just opened, then open Encore again.", nullptr);
 		return false;
 	}
 	return true;
@@ -1897,7 +1897,7 @@ static bool mac_preflight(void) {
 int main(int, char **) {
 	g_root = find_root();
 	if (!exists(g_root + "/pipeline/vitarecomp.py")) {   /* (the launcher apart from its folder: run from inside the zip, or copied out alone) */
-		SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Project Nativ", "Project Nativ can't find the rest of its files.\n\nIf you opened it from inside the zip, extract the whole zip first (on Windows: right-click it, Extract All), then open Project Nativ from the extracted folder.", nullptr);
+		SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Encore", "Encore can't find the rest of its files.\n\nIf you opened it from inside the zip, extract the whole zip first (on Windows: right-click it, Extract All), then open Encore from the extracted folder.", nullptr);
 		return 1;
 	}
 	g_dump = library_dir();
@@ -1926,8 +1926,8 @@ int main(int, char **) {
 	int sw = 1280, sh = 800;
 	if (const char *s = getenv("ATIV_SHOT_SIZE")) sscanf(s, "%dx%d", &sw, &sh);
 	const float scale = shot_path ? 1.0f : SDL_GetDisplayContentScale(SDL_GetPrimaryDisplay());
-	SDL_Window *win = shot_path ? SDL_CreateWindow("Project Nativ", sw, sh, SDL_WINDOW_HIDDEN)
-	                            : SDL_CreateWindow("Project Nativ", (int)(1180 * scale), (int)(760 * scale), SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
+	SDL_Window *win = shot_path ? SDL_CreateWindow("Encore", sw, sh, SDL_WINDOW_HIDDEN)
+	                            : SDL_CreateWindow("Encore", (int)(1180 * scale), (int)(760 * scale), SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
 	g_gpu = SDL_CreateGPUDevice(SDL_GPU_SHADERFORMAT_SPIRV | SDL_GPU_SHADERFORMAT_DXIL | SDL_GPU_SHADERFORMAT_METALLIB, false, nullptr);
 	if (!win || !g_gpu || (!shot_path && !SDL_ClaimWindowForGPUDevice(g_gpu, win))) { fprintf(stderr, "window/GPU: %s\n", SDL_GetError()); return 1; }
 	if (!shot_path) SDL_SetGPUSwapchainParameters(g_gpu, win, SDL_GPU_SWAPCHAINCOMPOSITION_SDR, SDL_GPU_PRESENTMODE_VSYNC);
@@ -1960,7 +1960,7 @@ int main(int, char **) {
 		g_add_open = ui_sel == "add" || ui_sel == "add:vita"; g_open_vita_popup = ui_sel == "add:vita";
 		if (const char *f = getenv("ATIV_SHOT_SCAN")) { scan_load(f); g_add_kind = 0; g_scan_path = "/Volumes/Vita/ux0"; }
 		g_drawer = ui_sel == "log";
-		g_sac_open = ui_sel.rfind("sac", 0) == 0; g_sac_game = "PCSE00640"; g_sac_rebuilt = ui_sel == "sac:again";
+		g_sac_open = ui_sel.rfind("sac", 0) == 0; g_sac_game = "PCSE00764"; g_sac_rebuilt = ui_sel == "sac:again";
 		g_settings_open = ui_sel.rfind("settings", 0) == 0; if (g_settings_open && ui_sel.size() > 9) g_settings_tab = atoi(ui_sel.c_str() + 9);
 		if (ui_sel.rfind("game:", 0) == 0) g_game_settings = ui_sel.substr(5);
 		if (ui_sel.rfind("name:", 0) == 0) g_name_game = ui_sel.substr(5);

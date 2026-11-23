@@ -1,11 +1,11 @@
 #!/bin/bash
-# A self-contained Linux install of Project Nativ in one folder (a Steam Deck's, any distribution's): linux-install.sh <folder>
+# A self-contained Linux install of Encore in one folder (a Steam Deck's, any distribution's): linux-install.sh <folder>
 #   <folder>/            the shipped tools (vitarecomp dist: pipeline, runtime, packs, ...) and version.txt
 #   <folder>/toolchain/  zig's clang, SDL3, zlib, FFmpeg (runtime/platform/linux/setup-toolchain.sh's, copied without its
 #                        downloads and build trees): runtime/build.py and launcher/build.sh use it, nothing of the machine's
 #   <folder>/python/     python-build-standalone with requirements.txt installed: the stages' Python (hub.cpp python_exe)
 #   <folder>/launcher/nativ + libSDL3.so.0   built with that toolchain; it finds the folder from where it sits
-#   <folder>/Project Nativ.sh                starts it (Steam: add it as a non-Steam game)
+#   <folder>/Encore.sh                starts it (Steam: add it as a non-Steam game)
 # Run again over the same folder to update it (dist removes only what it wrote; python and toolchain are kept when current).
 # Needs the toolchain built here first ($ATIV_LINUX_TOOLCHAIN, default ~/toolchains/ativ-linux). The player's library
 # (dump/: games, firmware) is not part of it: the launcher's first run sets that up.
@@ -38,10 +38,10 @@ fi
 
 # the launcher, built with the install's own toolchain (no build machine's path in it)
 ATIV_LINUX_TOOLCHAIN=$OUT/toolchain "$ROOT/launcher/build.sh" "$OUT/launcher/nativ"
-cat > "$OUT/Project Nativ.sh" <<'EOF'
+cat > "$OUT/Encore.sh" <<'EOF'
 #!/bin/sh
-# Project Nativ's launcher (Steam: add this file as a non-Steam game)
+# Encore's launcher (Steam: add this file as a non-Steam game)
 exec "$(dirname "$(readlink -f "$0")")/launcher/nativ" "$@"
 EOF
-chmod +x "$OUT/Project Nativ.sh"
+chmod +x "$OUT/Encore.sh"
 echo "install: $OUT ($(cat "$OUT/version.txt"); $(du -sh "$OUT" | cut -f1))"

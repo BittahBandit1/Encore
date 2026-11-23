@@ -127,7 +127,7 @@ static int add_mapping(uint16_t ext, int lease) {   /* the HTTP status (200: don
 	char args[512], out[4096];
 	snprintf(args, sizeof args, "<NewRemoteHost></NewRemoteHost><NewExternalPort>%u</NewExternalPort><NewProtocol>UDP</NewProtocol>"
 	         "<NewInternalPort>%u</NewInternalPort><NewInternalClient>%s</NewInternalClient><NewEnabled>1</NewEnabled>"
-	         "<NewPortMappingDescription>Project Nativ</NewPortMappingDescription><NewLeaseDuration>%d</NewLeaseDuration>", ext, internal_port, lan_ip, lease);
+	         "<NewPortMappingDescription>Encore</NewPortMappingDescription><NewLeaseDuration>%d</NewLeaseDuration>", ext, internal_port, lan_ip, lease);
 	const int st = soap("AddPortMapping", args, out, sizeof out);
 	if (st != 200 && m2_log()) { char code[16] = "?"; tag(out, "errorCode", code, sizeof code); fprintf(stderr, "    m2: upnp: port %u: refused (HTTP %d, error %s)\n", ext, st, code); }
 	return st;
