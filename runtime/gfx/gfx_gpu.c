@@ -2657,7 +2657,7 @@ static int cur_wx0, cur_wy0, cur_wx1, cur_wy1;       /* the draw being recorded:
  * from guest memory gets the snapshot downloaded there once (snap_to_guest). */
 static void target_sync_for_gpu(TargetEntry *e);   /* (below) */
 static int gpu_vulkan(void);   /* (below) */
-static int gpu_snap_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("RECOMP_GPU_SNAP"); v = e && *e ? *e != '0' : gpu_vulkan(); } return v; }
+static int gpu_snap_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("RECOMP_GPU_SNAP"); v = e && *e ? *e != '0' : 1; } return v; }
 static int target_snapshot(TargetEntry *e) {
 	static uint64_t snaps;
 	target_sync_for_gpu(e);   /* (guest memory newer after a CPU write: up first, as a scene starting on it would) */
@@ -4334,7 +4334,7 @@ static void view_pass(SDL_GPUCommandBuffer *cmd, SDL_GPUTexture *dst, SDL_GPUTex
  * RECOMP_GPU_TRANSFER=0|1 picks. Returns 0 for the CPU path to do it. */
 int gfxcap_active(void);   /* gfx_capture.c */
 static int gpu_vulkan(void) { static int v = -1; if (v < 0) { if (!gpu()) return 0; const char *dv = SDL_GetGPUDeviceDriver(gpu()); v = dv && !strcmp(dv, "vulkan"); } return v; }   /* (not cached before the device exists) */
-static int gpu_transfer_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("RECOMP_GPU_TRANSFER"); v = e && *e ? *e != '0' : gpu_vulkan(); } return v; }
+static int gpu_transfer_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("RECOMP_GPU_TRANSFER"); v = e && *e ? *e != '0' : 1; } return v; }
 int gfx_gpu_transfer_downscale(uint32_t src, uint32_t sw, uint32_t sh, uint32_t sstride, uint32_t dst, uint32_t dstride) {
 	if (!gpu() || !gpu_transfer_on() || gfxcap_active()) return 0;
 	static int trace = -1; if (trace < 0) trace = getenv("RECOMP_GPU_TRANSFER_TRACE") != 0;   /* RECOMP_GPU_TRANSFER_TRACE=1: why a transfer stayed on the CPU */
@@ -6488,6 +6488,33 @@ void gfx_gpu_present(uint32_t base, uint32_t width, uint32_t height, uint32_t pi
 			if (fo) fclose(fo);
 			SDL_UnmapGPUTransferBuffer(gpu(), xb); SDL_ReleaseGPUTransferBuffer(gpu(), xb);
 		}
+		/* RECOMP_PRESENT_TRACE=1 (display.c's present cadence) also hashes each presented frame (a download and a wait: a
+		 * diagnostic only): a line a second of how many presents showed a picture different from the one before -- 120
+		 * presents a second with 30 new ones is a 30 fps game shown four times */
+		{ static int ph = -1; if (ph < 0) ph = getenv("RECOMP_PRESENT_TRACE") != 0;
+		  if (ph && e->color && (e->kind == TK_U8 || e->kind == TK_U8S)) {
+			target_sync_for_gpu(e);
+			uint32_t w = TSX(e, width), h = TSY(e, height), n = 4 * w * h;
+			SDL_GPUTransferBufferCreateInfo xci = { .usage = SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD, .size = n };
+			SDL_GPUTransferBuffer *xb = SDL_CreateGPUTransferBuffer(gpu(), &xci);
+			if (xb) {
+				SDL_GPUCommandBuffer *cmd = SDL_AcquireGPUCommandBuffer(gpu()); SDL_GPUCopyPass *cp = SDL_BeginGPUCopyPass(cmd);
+				SDL_GPUTextureRegion src = { .texture = e->color, .w = w, .h = h, .d = 1 };
+				SDL_GPUTextureTransferInfo dst = { .transfer_buffer = xb, .pixels_per_row = w, .rows_per_layer = h };
+				SDL_DownloadFromGPUTexture(cp, &src, &dst); SDL_EndGPUCopyPass(cp);
+				SDL_GPUFence *f = SDL_SubmitGPUCommandBufferAndAcquireFence(cmd); SDL_WaitForGPUFences(gpu(), true, &f, 1); SDL_ReleaseGPUFence(gpu(), f);
+				const uint8_t *px = SDL_MapGPUTransferBuffer(gpu(), xb, false);
+				if (px) {
+					uint64_t hsh = 1469598103934665603ull; for (uint32_t i = 0; i < n; i += 4) { hsh ^= *(const uint32_t *)(px + i); hsh *= 1099511628211ull; }
+					{ uint32_t mg = 0, cnt = 0; for (uint32_t i = 0; i < n; i += 4 * 61, cnt++) if (px[i] > 200 && px[i + 1] < 70 && px[i + 2] > 200) mg++;   /* (sampled: a magenta frame, Metal's fill for a texture never written) */
+					  if (cnt && mg * 20 > cnt) fprintf(stderr, "    present hash: frame %u is %.0f%% magenta (target %#x %ux%u)\n", (unsigned)gpu_frame_no, 100.0 * mg / cnt, e->addr, e->width, e->height); }
+					static uint64_t last_h, t0; static unsigned pres, fresh; uint64_t t = plat_now_us(); if (!t0) t0 = t;
+					pres++; if (hsh != last_h) fresh++; last_h = hsh;
+					if (t - t0 >= 1000000) { fprintf(stderr, "    present hash: %u of %u presents new (%.0f distinct fps)\n", fresh, pres, fresh * 1e6 / (double)(t - t0)); pres = fresh = 0; t0 = t; }
+				}
+				SDL_UnmapGPUTransferBuffer(gpu(), xb); SDL_ReleaseGPUTransferBuffer(gpu(), xb);
+			}
+		  } }
 		extern int window_active(void); extern void window_present_gpu(void *tex, uint32_t w, uint32_t h, int raw);
 		static int no_gpu_present = -1; if (no_gpu_present < 0) no_gpu_present = getenv("RECOMP_GPU_NO_PRESENT") != 0;   /* RECOMP_GPU_NO_PRESENT=1: present through guest memory as before */
 		/* an sRGB frame goes to the window as raw texels (a copy, not a blit) where the backend copies between the sRGB and

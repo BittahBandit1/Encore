@@ -659,6 +659,9 @@ static void builtin_env(void) {
 }
 int main(int argc, char **argv) {
 	builtin_env();
+#ifdef __APPLE__
+	if (!getenv("MTL_HUD_ENABLED")) setenv("MTL_HUD_ENABLED", "1", 0);
+#endif
 #ifdef __linux__
 	/* RECOMP_DEBUGGABLE=1: let any process attach a debugger (Yama ptrace_scope 1 only allows the
 	 * parent): `gdb -p` / `eu-stack -p` thread dumps of a stalled run without root */

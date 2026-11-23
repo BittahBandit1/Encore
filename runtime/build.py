@@ -239,6 +239,8 @@ def main(argv):
         # made once never compile again, whatever the OS's shader cache lets go
         SPIRV_CROSS += [os.path.join(RT, "gfx", "mtl_archive.m"), "-framework", "Metal", "-framework", "Foundation"]
         FLAGS.append("-DRECOMP_MTL_ARCHIVE")
+    if DARWIN and not WIN and not SPIRV_CROSS:
+        die("build: spirv-cross-c not found (required for Metal MSL shader translation). Install with: brew install spirv-cross (or run runtime/platform/macos/setup-toolchain.sh)")
     # overlay.cpp + Dear ImGui are C++: cc (clang) won't pull its runtime in for object files alone, the
     # same reasoning as the spirv-cross block's own comment above
     CXXLIB = ["-lc++"] if DARWIN or WIN or LT else ["-lstdc++"]   # (zig's libc++ for the install's toolchain)

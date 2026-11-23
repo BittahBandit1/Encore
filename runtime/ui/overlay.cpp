@@ -353,8 +353,8 @@ static void page_performance(void) {
 static void page_game(void) {
 	prefs_load();
 	if (!ui::rows_begin("game")) return;
-	ui::row("Frame rate", "60 is experimental: parts of a game timed in fixed 1/30 s steps can run fast.");
-	{ static const char *const names[2] = {"30##fr", "60##fr"}; int v = P.fr >= 60; if (ui::segmented(names, 2, &v)) set_frame_rate(v ? 60 : 30); }
+	ui::row("Frame rate", "60 and 120 are experimental: parts of a game timed in fixed 1/30 s steps can run fast.");
+	{ static const char *const names[3] = {"30##fr", "60##fr", "120##fr"}; int v = P.fr >= 120 ? 2 : P.fr >= 60 ? 1 : 0; if (ui::segmented(names, 3, &v)) set_frame_rate(v == 2 ? 120 : v == 1 ? 60 : 30); }
 	if (game_option("fov")) {
 		ui::row("Field of view", "A wider view. 1.00× is the game's own.");
 		ImGui::SetNextItemWidth(-FLT_MIN); if (ImGui::SliderFloat("##fov", &P.fov, 0.75f, 1.5f, "%.2f×")) set_fov(P.fov);
@@ -658,7 +658,8 @@ static void menu_view(void) {
 	if (game_option("character_detail")) { ImGui::TextDisabled("Character detail"); ImGui::SetNextItemWidth(170); if (ImGui::SliderFloat("##chr", &P.chr, 1.0f, 8.0f, "%.1fx")) set_chr(P.chr); }
 	if (ImGui::BeginMenu("Frame rate")) {
 		if (ImGui::MenuItem("30", nullptr, P.fr < 60)) set_frame_rate(30);
-		if (ImGui::MenuItem("60 (experimental)", nullptr, P.fr >= 60)) set_frame_rate(60);
+		if (ImGui::MenuItem("60", nullptr, P.fr >= 60 && P.fr < 120)) set_frame_rate(60);
+		if (ImGui::MenuItem("120 (experimental)", nullptr, P.fr >= 120)) set_frame_rate(120);
 		ImGui::EndMenu();
 	}
 	if (ImGui::BeginMenu("On-screen stats")) {
@@ -1143,8 +1144,9 @@ static void prompt(ImDrawList *dl, int k, ImVec2 c, float size, ImU32 col) {   /
 	const ImVec2 p(roundf((c.x - size * 0.5f) * fb) / fb, roundf((c.y - size * 0.5f) * fb) / fb);   /* (on whole pixels: sharp) */
 	dl->AddImage(atlas->TexRef, p, ImVec2(p.x + size, p.y + size), uv, ImVec2(uv.x + d.x, uv.y + d.y), col);
 }
+extern "C" int window_pad_touchpad(void);   /* window.c: RECOMP_PAD_TOUCHPAD */
 static void pad_names(const char **l, const char **r, const char **a, bool *touchpad, int *fam) {   /* the first pad's own button names and icons */
-	*l = "L1"; *r = "R1"; *a = "Cross"; *touchpad = true; *fam = FAM_PS;   /* (the Vita's own names, and a DualShock 4's or DualSense's: unless the pad says otherwise) */
+	*l = "L1"; *r = "R1"; *a = "Cross"; *touchpad = window_pad_touchpad() != 0; *fam = FAM_PS;   /* (the Vita's own names, and a DualShock 4's or DualSense's: unless the pad says otherwise) */
 	int n = 0; SDL_JoystickID *ids = SDL_GetGamepads(&n);
 	if (ids && n > 0) {
 		const SDL_GamepadType t = SDL_GetGamepadTypeForID(ids[0]);

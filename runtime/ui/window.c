@@ -802,6 +802,10 @@ void window_input_pad2(uint32_t *b, uint8_t s[4]) {
 	*b = (*b & ~(LTRIG | RTRIG)) | (v & LTRIG ? L1 : 0) | (v & RTRIG ? R1 : 0) | (v & PAD_L2 ? LTRIG : 0) | (v & PAD_R2 ? RTRIG : 0) | (v & (L3 | R3));
 }
 
+/* RECOMP_PAD_TOUCHPAD=0 (a pack's RUN_ENV): a DualShock 4's / DualSense's touchpad doesn't touch the Vita's screen -- for games
+ * played on the buttons alone (the Persona Dancing games), where a stray brush of the pad was a stray touch; its click then
+ * opens the menu, like the Guide button */
+int window_pad_touchpad(void) { static int v = -1; if (v < 0) { const char *e = getenv("RECOMP_PAD_TOUCHPAD"); v = !(e && *e == '0'); } return v; }
 static uint32_t pad_bit(int b) {
 	switch (b) {
 	case SDL_GAMEPAD_BUTTON_SOUTH: return CROSS; case SDL_GAMEPAD_BUTTON_EAST: return CIRCLE;
@@ -966,7 +970,7 @@ void window_run(void *(*fn)(void *), void *arg) {
 			 * were down so the game never sees them as still held on resume. */
 			if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat && e.key.key == SDLK_F10) { overlay_toggle(); if (overlay_is_open()) { buttons = 0; touch_down = 0; gamepad_touch_release(); } }
 			if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat && e.key.key == SDLK_ESCAPE) { if (overlay_is_open()) overlay_close(); else overlay_bar_dismiss(); }   /* (closed: Escape hides the menu bar and its menus) */
-			if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN && e.gbutton.button == SDL_GAMEPAD_BUTTON_GUIDE) { overlay_toggle(); if (overlay_is_open()) { buttons = 0; touch_down = 0; gamepad_touch_release(); } }
+			if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN && (e.gbutton.button == SDL_GAMEPAD_BUTTON_GUIDE || (e.gbutton.button == SDL_GAMEPAD_BUTTON_TOUCHPAD && !window_pad_touchpad()))) { overlay_toggle(); if (overlay_is_open()) { buttons = 0; touch_down = 0; gamepad_touch_release(); } }
 			if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN && e.gbutton.button == SDL_GAMEPAD_BUTTON_BACK) pad_back = 1;
 			if (e.type == SDL_EVENT_GAMEPAD_BUTTON_UP && e.gbutton.button == SDL_GAMEPAD_BUTTON_BACK) { pad_back = 0; pad_combo_latch = 0; }
 			if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN && e.gbutton.button == SDL_GAMEPAD_BUTTON_START) pad_start = 1;
@@ -1056,7 +1060,7 @@ void window_run(void *(*fn)(void *), void *arg) {
 				else if (was && e.gaxis.value < 8000) ptrig[k] = 0;
 				if (ptrig[k] != was) { if (shoulders_swapped) pad_second(pad, k, ptrig[k]); else pad_main(pad, k, ptrig[k]); }
 			}
-			if (e.type == SDL_EVENT_GAMEPAD_TOUCHPAD_DOWN || e.type == SDL_EVENT_GAMEPAD_TOUCHPAD_MOTION || e.type == SDL_EVENT_GAMEPAD_TOUCHPAD_UP) {
+			if (window_pad_touchpad() && (e.type == SDL_EVENT_GAMEPAD_TOUCHPAD_DOWN || e.type == SDL_EVENT_GAMEPAD_TOUCHPAD_MOTION || e.type == SDL_EVENT_GAMEPAD_TOUCHPAD_UP)) {
 				int f = e.gtouchpad.finger;
 				if (e.gtouchpad.touchpad == 0 && f >= 0 && f < TP_FINGERS) {
 					if (e.type == SDL_EVENT_GAMEPAD_TOUCHPAD_UP) tp_down[f] = 0;
@@ -1449,6 +1453,12 @@ void window_run(void *(*fn)(void *), void *arg) {
 			for (int i = 0; i < ST_FINGERS; i++) rear_in_play |= st_down[i] && st_port[i];
 			if (rear_in_play) { float x0, y0, x1, y1; touch_to_point(0, REAR_Y0, &x0, &y0); touch_to_point(1920, REAR_Y1 + 1, &x1, &y1); rear[0] = x0; rear[1] = y0; rear[2] = x1 - x0; rear[3] = y1 - y0; }
 			overlay_marks(cmd, swap, ww, wh, dt, mk, nm, rear);
+		}
+		else if (got_swap && swap) {
+			/* no frame from the game yet (startup, before its first present): the swapchain texture still has to be
+			 * written -- submitted untouched, Metal shows whatever the drawable held, a magenta flash at launch */
+			SDL_GPUColorTargetInfo ct = { .texture = swap, .load_op = SDL_GPU_LOADOP_CLEAR, .clear_color = { 0, 0, 0, 1 }, .store_op = SDL_GPU_STOREOP_STORE };
+			SDL_GPURenderPass *rp = SDL_BeginGPURenderPass(cmd, &ct, 1, 0); if (rp) SDL_EndGPURenderPass(rp);
 		}
 		frame_fence[frame_fi] = SDL_SubmitGPUCommandBufferAndAcquireFence(cmd); frame_fi = (frame_fi + 1) % 3;   /* vsync via the swapchain paces this loop; the fence is for the poll above, frames_in_flight on */
 		if (wlock) gfx_lock_leave();
