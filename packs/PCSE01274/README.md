@@ -1,8 +1,8 @@
-# Persona 3 (PCSE01274, US)
+# Persona 3: Dancing in Moonlight (PCSE01274, US)
 
 Plays from your own copy, dumped from your Vita: the game (`ux0:app/PCSE01274`, with its `sce_sys/package/work.bin`) and
 the add-ons you own (`ux0:addcont/PCSE01274`). Nothing of the game is in this repository: `pack.toml` and `hooks.c` are all
-this pack holds.  Dancing in Moonlight runs on Atlus's own engine (GFD, as in Persona 5); P3D and P5D are built from the same code.
+this pack holds. Dancing in Moonlight runs on Atlus's own engine (GFD, as in Persona 5); P3D and P5D are built from the same code.
 
 ## Setting it up
 
@@ -19,8 +19,8 @@ vitarecomp run PCSE01274
 
 The overlay's frame rate setting (or `RECOMP_FRAME_RATE=60`). The engine keeps its frame rate in a global (30 on the
 Vita, 60 on PS4): at 60 its getter and the swap interval read 60, so its fixed steps are 1/60 s; the menus' own 1/30 s
-steps become 1/60 s too (`hooks.c`). `RECOMP_ Dancing in Moonlight_STEP30=1` leaves the menus' steps alone.
+steps become 1/60 s too (`hooks.c`). `RECOMP_P3D_STEP30=1` leaves the menus' steps alone.
 
 ## Texture packs
 
-Vita3K packs (`textures/import/PCSE01274/<hash>.dds|png`) work unchanged: `RECOMP_TEXTURE_PACK=<folder>`. For  Dancing in Moonlight: P3D:PS4 texture pack (p3d_ps4_texture_pack_v101, 505 BC7 textures; works unchanged).
+Vita3K packs (`textures/import/PCSE01274/<hash>.dds|png`) work unchanged: `RECOMP_TEXTURE_PACK=<folder>`. For Persona 3, the PS4 texture pack (p3d_ps4_texture_pack_v101, 505 BC7 textures) works unchanged.

@@ -1,5 +1,10 @@
 # Online play
 
+> **Encore note:** the Persona Dancing games don't play online. This document is kept because the online
+> runtime it describes (`runtime/net/`, `servers/nativ-node/`) is still part of Project Nativ's code that Encore is
+> built on. Killzone's server stand-in (`servers/kzserver`) and the online test scripts it mentions were removed
+> along with Killzone: Mercenary and Unit 13.
+
 The games keep their own online code. Sony's networking libraries run recompiled and unchanged, and Nativ provides the
 network they expect: the matchmaking servers, the address lookups and the paths between players that PSN used to
 provide. Sony's own servers are never contacted (`net_blocked` in `runtime/net/net.c`).
