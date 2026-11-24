@@ -64,7 +64,9 @@ static uint64_t acc_render_us;
 static uint32_t acc_scenes, acc_draws;
 static int backend_gpu;   /* 0 soft, 1 gpu; metrics_set_backend's only writer, set once early */
 void metrics_add_render(uint64_t us) { __atomic_add_fetch(&acc_render_us, us, __ATOMIC_RELAXED); }
-void metrics_add_scene(void) { __atomic_add_fetch(&acc_scenes, 1, __ATOMIC_RELAXED); }
+static uint64_t scenes_total;   /* every scene ever (metrics_scenes_total: the present trace asks whether a frame drew anything) */
+uint64_t metrics_scenes_total(void) { return __atomic_load_n(&scenes_total, __ATOMIC_RELAXED); }
+void metrics_add_scene(void) { __atomic_add_fetch(&acc_scenes, 1, __ATOMIC_RELAXED); __atomic_add_fetch(&scenes_total, 1, __ATOMIC_RELAXED); }
 void metrics_add_draw(void) { __atomic_add_fetch(&acc_draws, 1, __ATOMIC_RELAXED); }
 void metrics_set_backend(int gpu) { __atomic_store_n(&backend_gpu, gpu, __ATOMIC_RELAXED); }
 static int render_scale = 1;

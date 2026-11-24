@@ -6510,7 +6510,25 @@ void gfx_gpu_present(uint32_t base, uint32_t width, uint32_t height, uint32_t pi
 					  if (cnt && mg * 20 > cnt) fprintf(stderr, "    present hash: frame %u is %.0f%% magenta (target %#x %ux%u)\n", (unsigned)gpu_frame_no, 100.0 * mg / cnt, e->addr, e->width, e->height); }
 					static uint64_t last_h, t0; static unsigned pres, fresh; uint64_t t = plat_now_us(); if (!t0) t0 = t;
 					pres++; if (hsh != last_h) fresh++; last_h = hsh;
-					if (t - t0 >= 1000000) { fprintf(stderr, "    present hash: %u of %u presents new (%.0f distinct fps)\n", fresh, pres, fresh * 1e6 / (double)(t - t0)); pres = fresh = 0; t0 = t; }
+					/* presents with no scene drawn since the one before (the game showed a frame it didn't draw) */
+					extern uint64_t metrics_scenes_total(void); static uint64_t sc_last; static unsigned undrawn, undrawn_same;
+					{ const uint64_t sc = metrics_scenes_total(); if (sc == sc_last) { undrawn++; } sc_last = sc; }
+					/* and per region, an 8x4 grid: how many presents changed each tile -- a part of the picture updating at
+					 * half the rate of the rest (the 3D scene at 30 under a 60 fps interface) shows as tiles at half count */
+					enum { TX = 8, TY = 4 }; static uint64_t tile_last[TY][TX]; static unsigned tile_new[TY][TX];
+					for (int ty = 0; ty < TY; ty++) for (int tx = 0; tx < TX; tx++) {
+						uint64_t th = 1469598103934665603ull;
+						const uint32_t x0 = w * tx / TX, x1 = w * (tx + 1) / TX, y0 = h * ty / TY, y1 = h * (ty + 1) / TY;
+						for (uint32_t y = y0; y < y1; y += 2) for (uint32_t x = x0; x < x1; x += 2) { th ^= *(const uint32_t *)(px + 4 * ((size_t)y * w + x)); th *= 1099511628211ull; }
+						if (th != tile_last[ty][tx]) tile_new[ty][tx]++;
+						tile_last[ty][tx] = th;
+					}
+					if (t - t0 >= 1000000) {
+						fprintf(stderr, "    present hash: %u of %u presents new (%.0f distinct fps), %u with no scene drawn since the last; per tile (changes/s, rows top to bottom):", fresh, pres, fresh * 1e6 / (double)(t - t0), undrawn); undrawn = 0; (void)undrawn_same;
+						for (int ty = 0; ty < TY; ty++) { fprintf(stderr, " |"); for (int tx = 0; tx < TX; tx++) { fprintf(stderr, " %3.0f", tile_new[ty][tx] * 1e6 / (double)(t - t0)); tile_new[ty][tx] = 0; } }
+						fprintf(stderr, "\n");
+						pres = fresh = 0; t0 = t;
+					}
 				}
 				SDL_UnmapGPUTransferBuffer(gpu(), xb); SDL_ReleaseGPUTransferBuffer(gpu(), xb);
 			}

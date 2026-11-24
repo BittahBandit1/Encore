@@ -45,6 +45,7 @@ static char (*found_paths)[1100];
 static id<MTLBinaryArchive> cur;      /* added since the last flush (under cur_m) */
 static int cur_n, seg_next, compact, on;
 static uint64_t dirty_ms;             /* when cur's first pipeline was added (0: none) */
+static uint64_t last_add_ms;          /* when cur's latest pipeline was added: two quiet minutes after it, a flush */
 static char dir[1024];
 static IMP orig;
 static MtlAirStore air_store;
@@ -73,7 +74,7 @@ static void add(MTLRenderPipelineDescriptor *pd) {   /* a pipeline joins this se
 	pthread_mutex_lock(&cur_m);
 	if (!cur) cur = archive_new(nil);
 	NSError *e = nil;
-	if (cur && [cur addRenderPipelineFunctionsWithDescriptor:pd error:&e]) { cur_n++; if (!dirty_ms) dirty_ms = now_ms(); __atomic_add_fetch(&n_added, 1, __ATOMIC_RELAXED); }
+	if (cur && [cur addRenderPipelineFunctionsWithDescriptor:pd error:&e]) { cur_n++; if (!dirty_ms) dirty_ms = now_ms(); last_add_ms = now_ms(); __atomic_add_fetch(&n_added, 1, __ATOMIC_RELAXED); }
 	else { static int said; if (!said++) fprintf(stderr, "    gpu: shader archive: a pipeline wasn't added (%s)\n", e ? e.localizedDescription.UTF8String : "no archive"); }
 	pthread_mutex_unlock(&cur_m);
 	__atomic_add_fetch(&us_add, now_us() - t0, __ATOMIC_RELAXED);
@@ -236,15 +237,19 @@ static pthread_mutex_t fl_m = PTHREAD_MUTEX_INITIALIZER; static pthread_cond_t f
 void mtl_archive_flush_soon(int warm) {   /* (the render thread: a first session's segment is hundreds of MB) */
 	pthread_mutex_lock(&fl_m); if (fl_req < 1 + !!warm) fl_req = 1 + !!warm; pthread_cond_signal(&fl_c); pthread_mutex_unlock(&fl_m);
 }
-static void *flusher(void *arg) {   /* asked, or ten minutes after a pipeline joined */
+static void *flusher(void *arg) {   /* asked, ten minutes after a pipeline joined, or two quiet minutes after the latest */
 	(void)arg;
 	for (;;) {
 		pthread_mutex_lock(&fl_m);
 		if (!fl_req) { struct timespec t; clock_gettime(CLOCK_REALTIME, &t); t.tv_sec += 10; pthread_cond_timedwait(&fl_c, &fl_m, &t); }
 		const int r = fl_req; fl_req = 0;
 		pthread_mutex_unlock(&fl_m);
-		pthread_mutex_lock(&cur_m); const uint64_t d = dirty_ms; pthread_mutex_unlock(&cur_m);
-		if (r || (d && now_ms() - d > 600000)) mtl_archive_flush(r == 2);
+		pthread_mutex_lock(&cur_m); const uint64_t d = dirty_ms, l = last_add_ms; pthread_mutex_unlock(&cur_m);
+		/* ten minutes after the first new pipeline, or two quiet minutes after the latest (a scene's burst is over): a session that
+		 * never exits cleanly -- killed, crashed, force-quit -- kept nothing before, and every start compiled the same pipelines
+		 * again in play (73 in one P3D run, 0.9 s of hitches, 2026-11-23). Two minutes, not one: a segment per flush, and too
+		 * many segments make a start compact (above) */
+		if (r || (d && now_ms() - d > 600000) || (d && l && now_ms() - l > 120000)) mtl_archive_flush(r == 2);
 	}
 	return 0;
 }
