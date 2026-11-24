@@ -64,6 +64,7 @@
 
 extern "C" {
 #include "online/m2.h"   /* (online_status: the Game page's Online now) */
+int window_mouse_look_default(void);   /* window.c: RECOMP_MOUSE_LOOK */
 int net_online(void); const char *net_online_needs(void);
 /* display.c */
 void display_set_paused(int on);
@@ -224,6 +225,18 @@ static bool game_option(const char *name) {
 	return false;
 }
 static void set_frame_rate(int fr) { P.fr = fr; settings_set_int("frame_rate", fr); settings_save(); }
+/* F3, or a Steam Deck's R5 (window.c): the next frame rate, 30 -> 60 -> 90 -> 120 -> 30, at once (display.c reads the setting
+ * every frame), with a toast saying which */
+extern "C" void overlay_cycle_frame_rate(void) {
+	static const int rates[4] = {30, 60, 90, 120};
+	const int cur = settings_int("frame_rate", 30); int i = 0;
+	while (i < 4 && rates[i] <= cur) i++;
+	const int next = rates[i % 4];
+	set_frame_rate(next);
+	char b[64]; snprintf(b, sizeof b, "%d fps%s  [F3]", next, next > 30 ? " (experimental)" : "");
+	overlay_toast_titled("Frame rate", b, 2.0);
+	fprintf(stderr, "    frame rate: %d (F3 / R5)\n", next);
+}
 static void set_tcs(float v) { P.tcs = v; settings_set_float("touch_cursor_speed", v); settings_save(); }
 static void set_gyro(int on) { P.gyro = on != 0; settings_set_int("gyro", P.gyro); settings_save(); }
 static void set_gyro_pose(int flat) { P.gyro_flat = flat != 0; settings_set_str("gyro_pose", flat ? "flat" : "upright"); settings_save(); }
@@ -239,6 +252,7 @@ static const char *const g_shortcuts[][3] = {
 	{"This menu (pauses the game)", "F10 (Esc closes it)", "Guide, or Back + Start together"},
 	{"On-screen stats: off, FPS, full", "F1", "\u2014"},
 	{"Resolution: 1\u00d7 to 6\u00d7", "F2", "\u2014"},
+	{"Frame rate: 30, 60, 90, 120 in turn", "F3", "R5 (Steam Deck)"},
 	{"The rear camera's lamp", "F7", "\u2014"},
 	{"Capture a frame (to captures/)", "F12", "\u2014"},
 	{"Mark the log (for a bug report: \"that just happened\")", "F5", "\u2014"},
@@ -445,7 +459,7 @@ static void page_controls(void) {
 			if (ui::segmented(names, 3, &v)) { settings_set_str("input_mode", ids[v]); settings_save(); }
 		}
 		ui::row("Mouse look", "The mouse turns the camera and aims; left button R, right button L.");
-		{ bool look = settings_int("mouse_look", 1) != 0; if (ui::toggle("ml", &look)) { settings_set_int("mouse_look", look ? 1 : 0); settings_save(); } }
+		{ bool look = settings_int("mouse_look", window_mouse_look_default()) != 0; if (ui::toggle("ml", &look)) { settings_set_int("mouse_look", look ? 1 : 0); settings_save(); } }
 		ui::row("Mouse aim", "Direct: the game turns exactly as far as the mouse moves (games with direct aim; the others use Stick by themselves). Stick: the mouse moves the right stick. F8 switches.");
 		{ static const char *const names[2] = {"Direct##ma", "Stick##ma"}; int v = window_raw_look() ? 0 : 1; if (ui::segmented(names, 2, &v)) window_set_raw_look(v == 0); }
 		ui::row("Mouse sensitivity");
@@ -602,7 +616,7 @@ enum {
 	HOT_PX = 4,          /* the top-edge zone: the pointer resting within this many points of the edge opens the bar */
 	TAB_NEAR_PX = 48,    /* the pull tab shows while the pointer is within this of the top */
 };
-static const float HOT_DWELL_S = 0.18f, HIDE_S = 1.0f, SLIDE_S = 0.16f, PIN_S = 4.0f, TOAST_S = 4.5f, CURSOR_HIDE_S = 3.0f;
+static const float HOT_DWELL_S = 0.18f, HIDE_S = 1.0f, SLIDE_S = 0.16f, PIN_S = 4.0f, TOAST_S = 4.5f, CURSOR_HIDE_S = 5.0f;
 static float g_bar_vis;                 /* 0 hidden (parked above the window's top edge) .. 1 fully down */
 static bool g_bar_want;                 /* where it's heading */
 static double g_hot_since = -1;         /* when the pointer entered the top-edge zone (-1: it isn't there) */

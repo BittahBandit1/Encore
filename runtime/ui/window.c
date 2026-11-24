@@ -108,6 +108,11 @@ static SDL_Window *win;
  * through window_mouse_delta and turns it into its camera directly, no stick curve in between; with no
  * such hook taking it (none for the game, or not in play) the motion is a right-stick stand-in instead.
  * The window thread writes, game threads read: the motion is two fixed-point accumulators, exchanged. */
+/* the capture ("mouse_look"): on by default; a pack's RUN_ENV RECOMP_MOUSE_LOOK=0 makes it off by default -- a game with no
+ * camera to turn (the Persona Dancing games: rhythm on the buttons) keeps a visible pointer over the picture, hidden after
+ * a few seconds still (overlay.cpp), instead of a captured mouse that turns nothing. The menu's setting still wins. */
+int window_mouse_look_default(void) { static int def = -1; if (def < 0) { const char *e = getenv("RECOMP_MOUSE_LOOK"); def = !(e && *e == '0'); } return def; }   /* (overlay.cpp's toggle shows it too) */
+static int mouse_look_on(void) { return settings_int("mouse_look", window_mouse_look_default()); }
 static int kbm_auto;                       /* auto mode's current choice: 1 keyboard+mouse, 0 pad */
 static char kbm_why[48];                   /* what made that choice last (logged as the scheme changes) */
 static volatile int kbm_on, rel_on;
@@ -968,6 +973,10 @@ void window_run(void *(*fn)(void *), void *arg) {
 			/* the overlay itself: always live, open or not, so it can always be reached and always
 			 * closed. Opening (or re-opening by the same gamepad combo) clears whatever buttons/touch
 			 * were down so the game never sees them as still held on resume. */
+			/* the frame rate, 30 / 60 / 90 / 120 in turn: F3, or a Steam Deck's R5 (SDL's right paddle 2, which a game sees when
+			 * it reads the Deck itself; under Steam Input, map R5 to F3 in the game's controller layout) */
+			if ((e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat && e.key.key == SDLK_F3) ||
+			    (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN && e.gbutton.button == SDL_GAMEPAD_BUTTON_RIGHT_PADDLE2)) overlay_cycle_frame_rate();
 			if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat && e.key.key == SDLK_F10) { overlay_toggle(); if (overlay_is_open()) { buttons = 0; touch_down = 0; gamepad_touch_release(); } }
 			if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat && e.key.key == SDLK_ESCAPE) { if (overlay_is_open()) overlay_close(); else overlay_bar_dismiss(); }   /* (closed: Escape hides the menu bar and its menus) */
 			if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN && (e.gbutton.button == SDL_GAMEPAD_BUTTON_GUIDE || (e.gbutton.button == SDL_GAMEPAD_BUTTON_TOUCHPAD && !window_pad_touchpad()))) { overlay_toggle(); if (overlay_is_open()) { buttons = 0; touch_down = 0; gamepad_touch_release(); } }
@@ -1076,7 +1085,7 @@ void window_run(void *(*fn)(void *), void *arg) {
 			/* the mouse moved for real over the picture while the pad had the input (auto mode): back to keyboard +
 			 * mouse, so the capture returns at once -- it used to wait for a key, the pointer loose and stopping at
 			 * the window's edges after any touch of the pad (Alt still frees it; a nudge under a few points doesn't count) */
-			if (!rel_on && e.type == SDL_EVENT_MOUSE_MOTION && !overlay_mouse_captured() && settings_int("mouse_look", 1) &&
+			if (!rel_on && e.type == SDL_EVENT_MOUSE_MOTION && !overlay_mouse_captured() && mouse_look_on() &&
 			    fabsf(e.motion.xrel) + fabsf(e.motion.yrel) > 3.0f && !(SDL_GetModState() & SDL_KMOD_ALT)) { kbm_auto = 1; snprintf(kbm_why, sizeof kbm_why, "the mouse, not captured"); }
 			if (rel_on && (e.type == SDL_EVENT_MOUSE_MOTION || e.type == SDL_EVENT_MOUSE_BUTTON_DOWN || e.type == SDL_EVENT_MOUSE_BUTTON_UP)) {   /* captured: the look, and R / L */
 				if (e.type == SDL_EVENT_MOUSE_MOTION && now_us() - rel_since_us < 60000) continue;
@@ -1137,9 +1146,9 @@ void window_run(void *(*fn)(void *), void *arg) {
 			if (on && pstv) { kbm_used(); on = 0; }
 			static int said;
 			if (on != kbm_on) { extern uint64_t display_frames(void); fprintf(stderr, "    input: %s (%s%s, frame %llu)\n", on ? "keyboard and mouse" : "the controller", strcmp(mode, "auto") ? "Play with: " : "", strcmp(mode, "auto") ? mode : kbm_why[0] ? kbm_why : "start", (unsigned long long)display_frames()); }
-			if (on && !kbm_on && !said) { said = 1; overlay_toast_titled("Keyboard & mouse", "The mouse looks and aims -- hold [Alt] for the cursor\nControls: [F10]", 6.0); }
+			if (on && !kbm_on && !said) { said = 1; overlay_toast_titled("Keyboard & mouse", mouse_look_on() ? "The mouse looks and aims -- hold [Alt] for the cursor\nControls: [F10]" : "Controls: [F10]", 6.0); }
 			kbm_on = on;
-			int want = (on || (window_raw_look() && !pstv)) && settings_int("mouse_look", 1) && !overlay_is_open() && !overlay_dialog_active() && win && (SDL_GetWindowFlags(win) & SDL_WINDOW_INPUT_FOCUS) && !(SDL_GetModState() & SDL_KMOD_ALT);
+			int want = (on || (window_raw_look() && !pstv)) && mouse_look_on() && !overlay_is_open() && !overlay_dialog_active() && win && (SDL_GetWindowFlags(win) & SDL_WINDOW_INPUT_FOCUS) && !(SDL_GetModState() & SDL_KMOD_ALT);
 			/* SDL's own state, not just ours: the system can drop the capture behind our back (a focus change as
 			 * the window opens, say) and rel_on then claimed a capture that wasn't there -- the pointer showed,
 			 * left the window and stopped tracking at its edge. Re-applied whenever the two disagree. */
@@ -1473,6 +1482,22 @@ void window_run(void *(*fn)(void *), void *arg) {
 		frame_fence[frame_fi] = SDL_SubmitGPUCommandBufferAndAcquireFence(cmd); frame_fi = (frame_fi + 1) % 3;   /* vsync via the swapchain paces this loop; the fence is for the poll above, frames_in_flight on */
 		if (wlock) gfx_lock_leave();
 		uint64_t t_blit3 = now_us();
+		{	/* RECOMP_PRESENT_TRACE=1: the window's own presents, a line a second -- the intervals between them in buckets (a flat 16.7 at
+			 * 60 fps is what the display should get) and how long a new game frame waited for this loop */
+			static int wt = -1; if (wt < 0) wt = getenv("RECOMP_PRESENT_TRACE") != 0;
+			if (wt) {
+				static uint64_t prev, t0; static unsigned b[6], n; static uint64_t wait_sum, wait_max;
+				if (prev) { const uint64_t d = t_blit3 - prev; b[d < 10000 ? 0 : d < 14000 ? 1 : d < 19000 ? 2 : d < 23000 ? 3 : d < 30000 ? 4 : 5]++; }
+				prev = t_blit3; n++;
+				if (gshow >= 0 && gready_us[gshow] && t_blit3 > gready_us[gshow]) { const uint64_t w = t_blit3 - gready_us[gshow]; wait_sum += w; if (w > wait_max) wait_max = w; }
+				if (!t0) t0 = t_blit3;
+				if (t_blit3 - t0 >= 1000000) {
+					fprintf(stderr, "    window presents: %u; intervals <10 %u, 10-14 %u, 14-19 %u, 19-23 %u, 23-30 %u, >30 %u ms; frame ready -> submitted %.1f ms avg, %.1f max\n",
+					        n, b[0], b[1], b[2], b[3], b[4], b[5], n ? wait_sum / 1e3 / n : 0, wait_max / 1e3);
+					memset(b, 0, sizeof b); n = 0; wait_sum = wait_max = 0; t0 = t_blit3;
+				}
+			}
+		}
 		{	/* each newly shown GPU frame: the flip -> submit time, plus the compositor and scan-out estimate,
 			 * into the automatic A/V sync's picture term (av_video_ms); RECOMP_LATENCY_LOG=1 prints the
 			 * terms once a second */

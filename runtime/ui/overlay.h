@@ -22,6 +22,7 @@ extern "C" {
  * as a key cap, "\n" breaks the line. Up to three stack, newest on top; the same one again runs on instead */
 void overlay_toast_titled(const char *title, const char *body, double seconds);
 void overlay_toast(const char *msg, double seconds);   /* (no title) */
+void overlay_cycle_frame_rate(void);   /* F3 / a Steam Deck's R5: the next frame rate, with a toast */
 /* the save-data dialog (apputil.c, savedlg.h) is waiting on the player -- a list to pick from or a yes/no
  * question -- and the overlay is drawing it: window.c then routes the keyboard to the overlay instead of the
  * game, drops the mouse capture and lets go of what was held (the game is polling the dialog, not the pad) */
