@@ -1340,12 +1340,22 @@ void window_run(void *(*fn)(void *), void *arg) {
 
 		if (!gpu) { SDL_Delay(1); continue; }
 		if (overlay_game_paused()) { extern void gfx_shader_prep_tick(void); gfx_shader_prep_tick(); }   /* (a paused game doesn't present: the shader warm-up steps on from here, its prep card's too) */
-		if (self_paced) {   /* no vsync wait paces this loop: a present once the game has a new frame, else once a refresh (menus, the overlay); spinning presented ~1200 times a second and slowed the game */
+		/* Present when there is something new to show: a game frame, or the menu, the save dialog, a paused game or the
+		 * startup screens (they animate on their own: every refresh). Otherwise -- the game between its frames -- this loop
+		 * doesn't present, so the display's compositor sees the game's own rate: a game at 60 on a 90 Hz Steam Deck OLED
+		 * presented every refresh and gamescope (and macOS's frame-rate HUD) counted 90 frames a second, the same picture
+		 * shown again. With nothing new for 33 ms it presents anyway (toasts fading, a game stalled in a load). */
+		{ static int seen_game_frame; static uint64_t last_present_us;
+		  const int fresh = __atomic_load_n(&gnew, __ATOMIC_ACQUIRE) || __atomic_load_n(&new_frame, __ATOMIC_ACQUIRE);
+		  if (fresh) seen_game_frame = 1;
+		  const int every_refresh = !seen_game_frame || overlay_is_open() || overlay_dialog_active() || overlay_game_paused();
+		  if (self_paced) {   /* no vsync wait paces this loop: spinning presented ~1200 times a second and slowed the game */
 			const SDL_DisplayMode *dm = SDL_GetCurrentDisplayMode(SDL_GetDisplayForWindow(win));
-			const uint64_t period = (uint64_t)(1e6 / (dm && dm->refresh_rate > 1 ? dm->refresh_rate : 60.0f));
+			const uint64_t period = every_refresh ? (uint64_t)(1e6 / (dm && dm->refresh_rate > 1 ? dm->refresh_rate : 60.0f)) : 33333;
 			while (!__atomic_load_n(&gnew, __ATOMIC_ACQUIRE) && !__atomic_load_n(&new_frame, __ATOMIC_ACQUIRE) && now_us() - last_paced_us < period) SDL_DelayPrecise(250000);
 			last_paced_us = now_us();
-		}
+		  } else if (!fresh && !every_refresh && now_us() - last_present_us < 33333) { SDL_DelayPrecise(1000000); continue; }   /* (back to the events: input stays live) */
+		  last_present_us = now_us(); }
 		uint64_t t_blit0 = now_us();
 		SDL_GPUCommandBuffer *cmd = SDL_AcquireGPUCommandBuffer(gpu);
 		if (!cmd) continue;
