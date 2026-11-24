@@ -353,8 +353,9 @@ static void page_performance(void) {
 static void page_game(void) {
 	prefs_load();
 	if (!ui::rows_begin("game")) return;
-	ui::row("Frame rate", "60 and 120 are experimental: parts of a game timed in fixed 1/30 s steps can run fast.");
-	{ static const char *const names[3] = {"30##fr", "60##fr", "120##fr"}; int v = P.fr >= 120 ? 2 : P.fr >= 60 ? 1 : 0; if (ui::segmented(names, 3, &v)) set_frame_rate(v == 2 ? 120 : v == 1 ? 60 : 30); }
+	ui::row("Frame rate", "60, 90 and 120 are experimental: parts of a game timed in fixed 1/30 s steps can run fast. 90 suits a Steam Deck OLED, 120 a 120 Hz display.");
+	{ static const char *const names[4] = {"30##fr", "60##fr", "90##fr", "120##fr"}; static const int rates[4] = {30, 60, 90, 120};
+	  int v = P.fr >= 120 ? 3 : P.fr >= 90 ? 2 : P.fr >= 60 ? 1 : 0; if (ui::segmented(names, 4, &v)) set_frame_rate(rates[v]); }
 	if (game_option("fov")) {
 		ui::row("Field of view", "A wider view. 1.00× is the game's own.");
 		ImGui::SetNextItemWidth(-FLT_MIN); if (ImGui::SliderFloat("##fov", &P.fov, 0.75f, 1.5f, "%.2f×")) set_fov(P.fov);
@@ -658,7 +659,8 @@ static void menu_view(void) {
 	if (game_option("character_detail")) { ImGui::TextDisabled("Character detail"); ImGui::SetNextItemWidth(170); if (ImGui::SliderFloat("##chr", &P.chr, 1.0f, 8.0f, "%.1fx")) set_chr(P.chr); }
 	if (ImGui::BeginMenu("Frame rate")) {
 		if (ImGui::MenuItem("30", nullptr, P.fr < 60)) set_frame_rate(30);
-		if (ImGui::MenuItem("60", nullptr, P.fr >= 60 && P.fr < 120)) set_frame_rate(60);
+		if (ImGui::MenuItem("60", nullptr, P.fr >= 60 && P.fr < 90)) set_frame_rate(60);
+		if (ImGui::MenuItem("90 (experimental)", nullptr, P.fr >= 90 && P.fr < 120)) set_frame_rate(90);
 		if (ImGui::MenuItem("120 (experimental)", nullptr, P.fr >= 120)) set_frame_rate(120);
 		ImGui::EndMenu();
 	}

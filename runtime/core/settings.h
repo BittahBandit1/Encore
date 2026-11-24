@@ -46,7 +46,7 @@
  *   fov           hooks.c     a multiplier, 1.0 = the game's own vertical field of view (Unit 13's
  *                             camera update, Uncharted's render camera; culling included; RECOMP_FOV wins; read live, so the
  *                             menu's slider applies at once)
- *   frame_rate    display.c   30 | 60 | 120             60/120: swap interval capped at 1 edge (120 uses 120 Hz grid)
+ *   frame_rate    display.c   30 | 60 | 90 | 120        60+: swap interval capped at 1 edge (90/120: a 90/120 Hz present grid)
  *                             (experimental; RECOMP_FRAME_RATE wins; read every frame)
  *   touch_cursor_speed  window.c  a multiplier, 1.0 default   the bumper touch cursor's speed (either stick)
  *   gyro          motion.c    0 | 1 (default 1)         a DS4/DualSense gyro as the Vita's motion sensor

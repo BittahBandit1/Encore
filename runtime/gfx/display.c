@@ -213,12 +213,12 @@ static int frame_rate_target(void), unpaced(void);
 static uint64_t vblank0;
 static const uint64_t vb_period = 16667;
 static uint64_t wall_edges(void) { uint64_t t = now_us(); if (!vblank0) vblank0 = t; return (t - vblank0) / vb_period; }   /* hardware 60 Hz vblank edges */
-/* Separate present/flip grid for SetFrameBuf & WaitSetFrameBuf*: 60 Hz at 30/60 fps, 120 Hz at 120 fps.
+/* Separate present/flip grid for SetFrameBuf & WaitSetFrameBuf*: 60 Hz at 30/60 fps, 90 Hz at 90, 120 Hz at 120.
  * Keeps hardware vblank waits (sceDisplayWaitVblankStart*, vblank callbacks, pad pacing) at true 60 Hz! */
 static uint64_t pf_t0, pf_e0, pf_period = 16667;
 static pthread_mutex_t pf_grid_m = PTHREAD_MUTEX_INITIALIZER;
 static uint64_t pf_grid_sync(uint64_t t, uint64_t *out_period, uint64_t *out_t0, uint64_t *out_e0) {
-	uint64_t want = frame_rate_target() >= 120 ? 8333 : 16667;
+	int fr = frame_rate_target(); uint64_t want = fr >= 120 ? 8333 : fr >= 90 ? 11111 : 16667;
 	pthread_mutex_lock(&pf_grid_m);
 	if (!pf_t0) { pf_t0 = t; pf_e0 = 0; pf_period = want; }
 	else if (want != pf_period) {
@@ -348,7 +348,7 @@ static void vb_wait_setbuf(uint64_t target, uint32_t count) {
  * menu's choice applies at once. */
 static int forced_rate = -1;   /* display_force_frame_rate: a capture's switch (verify.c's F6), over everything else */
 void display_force_frame_rate(int fr) { forced_rate = fr; }
-static int norm_rate(int r) { return r >= 120 ? 120 : r >= 60 ? 60 : 30; }
+static int norm_rate(int r) { return r >= 120 ? 120 : r >= 90 ? 90 : r >= 60 ? 60 : 30; }   /* 90: a Steam Deck OLED's refresh */
 static int frame_rate_target(void) {
 	if (forced_rate >= 0) return norm_rate(forced_rate);
 	static int env = -2; static long from = -2;
@@ -384,10 +384,10 @@ int display_frame_rate_60(void) { return frame_rate_60(); }
 float display_frame_dt(void) {
 	uint64_t e = __atomic_load_n(clock_fixed() ? &frame_edges_g : &frame_edges, __ATOMIC_RELAXED);
 	int fr = frame_rate_target();
-	float base = fr >= 120 ? 120.0f : 60.0f;
-	uint64_t cap = fr >= 120 ? 4 : 2;
-	return (float)(e < 1 ? 1 : e > cap ? cap : e) / base;
-}   /* 1/60..1/30 s at 60 fps, 1/120..1/30 s at 120 fps */
+	int base = fr >= 60 ? fr : 60;   /* the present grid's rate: one edge is 1/base s */
+	uint64_t cap = (uint64_t)base / 30;
+	return (float)(e < 1 ? 1 : e > cap ? cap : e) / (float)base;
+}   /* 1/60..1/30 s at 60 fps, 1/90..1/30 at 90, 1/120..1/30 at 120 */
 static uint32_t swap_interval(uint32_t n) { if (!n) n = 1; if (n > 8) n = 8; return n > 1 && frame_rate_60() ? 1 : n; }
 static void h_wait_setbuf(Cpu *c) { if (!swap_seen) swap_seen = 1; vb_wait_setbuf(vb_setbuf + 1, 1); RET(0); }
 static void h_wait_setbuf_multi(Cpu *c) { uint32_t n = swap_interval(A0); if (n > swap_seen) swap_seen = n; vb_wait_setbuf(vb_setbuf + n, n); RET(0); }
