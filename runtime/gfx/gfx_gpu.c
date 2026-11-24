@@ -2181,7 +2181,11 @@ static void pipeline_build(PipeJob *j) {
 	if (mtl_archive_on) mtl_archive_want_clear();   /* (if SDL made none) */
 #endif
 	uint64_t dt = us_now() - tpb0; __atomic_add_fetch(&t_pipe_build, dt, __ATOMIC_RELAXED); __atomic_add_fetch(&n_pipe_builds, 1, __ATOMIC_RELAXED);
-	if (hitch_log() && (dt > 300 || j->async) && !j->p->prebuilt) fprintf(stderr, "    gpu hitch: pipeline %#x/%#x created in %.2f ms%s\n", j->vprog, j->fprog, dt / 1e3, j->async ? " (by a worker)" : "");
+	{ int from_archive = 0;
+#ifdef RECOMP_MTL_ARCHIVE
+	  if (mtl_archive_on) from_archive = mtl_archive_last_hit();
+#endif
+	  if (hitch_log() && (dt > 300 || j->async) && !j->p->prebuilt) fprintf(stderr, "    gpu hitch: pipeline %#x/%#x %s in %.2f ms%s\n", j->vprog, j->fprog, from_archive ? "from the archive" : "compiled", dt / 1e3, j->async ? " (by a worker)" : ""); }
 	if (!pp) fprintf(stderr, "    gpu: pipeline %#x/%#x: %s\n", j->vprog, j->fprog, SDL_GetError());
 	j->p->pipe = pp;
 	__atomic_store_n(&j->p->pending, 0, __ATOMIC_RELEASE);
