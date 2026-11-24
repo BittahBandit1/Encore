@@ -100,6 +100,7 @@ static void summary(const char *why) {
 		        hle_find(counts[i].name) ? "" : "   (stub)");
 	summary_threads();
 	{ extern void kernel_report_locks(void); kernel_report_locks(); }   /* who holds what the waiting threads want */
+	{ extern void kernel_report_threads(void); kernel_report_threads(); }   /* every guest thread and what it is blocked on */
 	{ extern void gxm_sony_report(void); gxm_sony_report(); }   /* RECOMP_GXM_CHECK's findings */
 #ifdef RECOMP_VERIFY
 	extern void verify_summary(void), coverage_write(void), watch_summary(void);
