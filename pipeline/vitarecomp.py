@@ -59,6 +59,11 @@
                                             the recompiler, the decrypter, the runtime's sources, the packs; no tests
                                             or developer tools). Over an install a dist wrote it replaces the program
                                             and nothing else: the library, a python/ or .venv there stay
+  vitarecomp port      <title> <android|ios> [--no-data]   the game for a phone, handheld or tablet: built for it
+                                            (runtime/build.py TARGET=) and packed -- an APK and its data folder, or an
+                                            IPA/TIPA with the data inside (--no-data: without) -- under
+                                            <library>/ports/<target>/<title>, the newest copied to ~/Downloads/Encore
+                                            (pipeline/port.py; the toolchains: runtime/platform/<target>/setup-toolchain.sh)
   vitarecomp report    <title>              a bug report: the game's logs, the launcher's, the settings and the
                                             newest F5 frame history in one zip, <library>/reports/<title>-<time>.zip
   vitarecomp update-check                   is a newer release out? "update <tag> <page>" or "current" (an install
@@ -575,6 +580,28 @@ def cmd_build(g, mode):
         with open(os.path.join(g.OUT, ".built_version"), "w", newline="\n") as f: f.write(tools_version() + "\n")
 
 
+def cmd_port(g, target, args):
+    """the game built for a phone or tablet (runtime/build.py TARGET=android|ios) and packed by pipeline/port.py"""
+    import port
+    if target not in ("android", "ios"): die("vitarecomp port <title> android|ios [--no-data]")
+    if not os.path.isfile(os.path.join(g.OUT, g.BASE + ".c")): die(f"{g.T}: not recompiled yet (vitarecomp recompile {g.T})")
+    run_env = " ".join(x for x in (g.RUN_ENV, ENV.get("BUILD_EXTRA_ENV") or "") if x)
+    srcs = sorted(glob.glob(os.path.join(glob.escape(os.path.join(PACKS, g.PACK)), "*.c")))
+    e = env_with({"RECOMP_RUN_ENV": run_env, "RECOMP_GAME_ADDRS": g.GAME_ADDRS, "RECOMP_PACK_SOURCES": os.pathsep.join(srcs), "TARGET": target})
+    pd = os.path.join(g.OUT, "port_" + target); os.makedirs(pd, exist_ok=True)
+    base = os.path.join(g.OUT, g.BASE)
+    run([PY, os.path.join(RUNTIME, "build.py"), base, os.path.join(pd, g.BASE)] + [os.path.join(g.OUT, "mod_" + m) for m in g.MODS], env=e)
+    prog = os.path.join(pd, "libmain.so" if target == "android" else g.BASE)
+    shipped = os.path.join(PACKS, g.PACK, "shaders.txt")
+    game = {"title": g.TITLE_ID, "name": g.NAME or g.TITLE_ID, "short": g.c.get("SHORT_NAME") or "", "out": g.OUT,
+            "image": os.path.join(g.OUT, g.BASE + ".img"), "entry": g.entry(), "modules": [os.path.join(g.OUT, m + ".img") for m in g.MODS],
+            "shaders": shipped if os.path.isfile(shipped) else "",
+            # (the play settings vitarecomp run adds beside the pack's RUN_ENV, which the build carries)
+            "env": [("RECOMP_LOG", "0"), ("RECOMP_HITCH_LOG", "50")] + [tuple(w.split("=", 1)) for w in (ENV.get("EXTRA_ENV") or "").split() if "=" in w]}
+    dest = os.path.join(DUMP, "ports", target, g.T)
+    (port.android if target == "android" else port.ios)(game, prog, dest, with_data="--no-data" not in args)
+
+
 def game_env(g, words, extra):
     """the game's process environment: words (RUN_ENV / TEST_ENV, then EXTRA_ENV), then the fixed settings in order"""
     e = env_with(words=words)
@@ -948,7 +975,7 @@ def main(argv):
     if cmd == "add": cmd_add(T, argv[2:]); return 0
     if cmd == "dist": cmd_dist(T); return 0
     if cmd == "report": cmd_report(T); return 0
-    if cmd not in ("import", "analyze", "recompile", "build", "ready", "run", "test", "capture", "replay", "accept", "check", "coverage", "verify", "recipes", "versions"):
+    if cmd not in ("import", "analyze", "recompile", "build", "ready", "run", "test", "capture", "replay", "accept", "check", "coverage", "verify", "recipes", "versions", "port"):
         usage(); return 1
     g = Game(T, cmd)
     arg3 = argv[2] if len(argv) > 2 else ""
@@ -975,6 +1002,7 @@ def main(argv):
     elif cmd == "verify": cmd_verify(g, arg3)
     elif cmd == "recipes": cmd_recipes(g)
     elif cmd == "versions": cmd_versions(g)
+    elif cmd == "port": cmd_port(g, arg3, argv[3:])
     return 0
 
 

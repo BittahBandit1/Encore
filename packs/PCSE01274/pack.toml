@@ -6,12 +6,12 @@ REGION = "US"
 SPLIT = 16
 # sce_module/ also holds libult, libface and libsmart; P4D never imported them
 MODULES = "libc libgxm_es4 libgpu_es4 libfios2"
-RUN_ENV = "RECOMP_GAME_OPTIONS=texture_pack RECOMP_PRESENT_MODE=vsync RECOMP_PAD_TOUCHPAD=0 RECOMP_MOUSE_LOOK=0 RECOMP_MOVIE_30=1"
+RUN_ENV = "RECOMP_GAME_OPTIONS=texture_pack RECOMP_PAD_TOUCHPAD=0 RECOMP_MOUSE_LOOK=0 RECOMP_MOVIE_30=1 RECOMP_ASPECT_HOOK=1 RECOMP_HUD_DRAWS=2d"
 # 60 fps: the game's frame rate (gfd's global +0x2c, 30 on the Vita; the PS4 build runs the same engine at 60) read
 # as 60 when the frame_rate setting is 60 -- its getter (0x81199484: the engine's fixed steps and timers, e.g. 0.01/fps)
 # and the present's swap interval (60 / fps at 0x811ee6d2). Without it every 1/30 s step ran each 1/60 s: double speed.
 # The menus keep their own 1/30 s steps (hooks.c p3d_step30, p3d_grid30): 1/60 s at 60 fps.
-IHOOKS = "0x8119948c:frames30 0x811ee6d2:frames30 0x81046f9a:p3d_grid30 0x81046fbe:p3d_step30 0x8112685a:p3d_step30 0x8103b6f0:p3d_step30"
+IHOOKS = "0x8119948c:frames30 0x811ee6d2:frames30 0x81046f9a:p3d_grid30 0x81046fbe:p3d_step30 0x8112685a:p3d_step30 0x8103b6f0:p3d_step30 0x81045822:p3d_dance_t30 0x81045874:p3d_dance_time 0x8104645a:p3d_shadow_alpha 0x811a51be:p3d_cam_aspect 0x811a51d0:p3d_cam_fov 0x811a6110:p3d_cam_r5 0x811a9b88:p3d_cam_r5 0x811ff5c6:p3d_cam_r5 0x811ff770:p3d_cam_r5 0x811ffdd2:p3d_cam_r9 0x8120f6ea:p3d_cam_r0 0x8120fdaa:p3d_cam_r0 0x81210be0:p3d_cam_r4 0x812116d6:p3d_cam_r0 0x812119ee:p3d_cam_r4 0x8121230c:p3d_cam_r0 0x812124bc:p3d_cam_r4 0x812129f8:p3d_cam_r0"
 TEST_ENV = "RECOMP_GFX=soft RECOMP_SHADERS=interp RECOMP_CLOCK=fixed RECOMP_ADDCONT_NONE=1"
 TEST_INPUT = ""
 TEST_FRAMES = 2400

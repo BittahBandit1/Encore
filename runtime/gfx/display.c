@@ -349,6 +349,10 @@ static void vb_wait_setbuf(uint64_t target, uint32_t count) {
 static int forced_rate = -1;   /* display_force_frame_rate: a capture's switch (verify.c's F6), over everything else */
 void display_force_frame_rate(int fr) { forced_rate = fr; }
 static int norm_rate(int r) { return r >= 120 ? 120 : r >= 90 ? 90 : r >= 60 ? 60 : 30; }   /* 90: a Steam Deck OLED's refresh */
+/* the last presented frame a pack's hook saw its game being played in (display_mark_gameplay): RECOMP_MOVIE_30 leaves those at the full rate */
+static volatile uint64_t display_gameplay_frame;
+void display_mark_gameplay(void) { display_gameplay_frame = frames; }
+int display_in_gameplay(void) { return display_gameplay_frame && frames < display_gameplay_frame + 15; }   /* (gfx_gpu.c: the HUD layout for a narrower aspect) */
 static int frame_rate_target(void) {
 	if (forced_rate >= 0) return norm_rate(forced_rate);
 	static int env = -2; static long from = -2;
@@ -375,7 +379,9 @@ static int frame_rate_target(void) {
 	 * The movies are 30 fps themselves; what a game times to them in its own updates (Persona 4 Dancing's anime
 	 * cutscenes: their event-script subtitles, one script frame an update) keeps its time */
 	static int movie30 = -1; if (movie30 < 0) movie30 = getenv("RECOMP_MOVIE_30") != 0;
-	if (r >= 60 && movie30) { extern uint64_t video_last_picture_frame; if (video_last_picture_frame && frames < video_last_picture_frame + 15) return 30; }
+	if (r >= 60 && movie30 && !(display_gameplay_frame && frames < display_gameplay_frame + 15)) {   /* (not under gameplay: a pack's hook marks
+		 * the frames its game is being played in -- Persona 3 Dancing's songs danced over a movie keep the frame rate, their notes with it) */
+		extern uint64_t video_last_picture_frame; if (video_last_picture_frame && frames < video_last_picture_frame + 15) return 30; }
 	return r;
 }
 static int frame_rate_60(void) { return frame_rate_target() >= 60; }
@@ -746,8 +752,10 @@ static void ctrl_peek(Cpu *c, int pad2) {   /* (port, SceCtrlData *, count): tim
 			unsigned long a = strtoul(q, (char **)&q, 10), z = a, m = 0;
 			if (*q == '-') z = strtoul(q + 1, (char **)&q, 10);
 			if (*q == ':') m = strtoul(q + 1, (char **)&q, 16);
-			if (frames >= a && frames <= z) {
-				WR32(p + 8, RD32(p + 8) | (uint32_t)m);
+			/* the 0x800000 bit (no Vita button) pulses the rest: pressed on alternate frames of the range, released between --
+			 * a fresh press every 33 ms over a whole song from one item (shader recording: every note hit on time) */
+			if (frames >= a && frames <= z && (!(m & 0x800000) || !((frames - a) & 1))) {
+				WR32(p + 8, RD32(p + 8) | (uint32_t)(m & 0x7fffff));
 				/* RECOMP_LOG_CTRL=1: the scripted presses as the game reads them (port, buffers asked,
 				 * the mask) -- Uncharted's menu ignored a scripted cross and this showed why */
 				static int logn = -1; if (logn < 0) logn = getenv("RECOMP_LOG_CTRL") ? 20 : 0;

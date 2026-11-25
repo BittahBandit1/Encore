@@ -658,6 +658,9 @@ static void builtin_env(void) {
 	if (n) fprintf(stderr, "    the game's built-in settings applied: %d (its pack's RUN_ENV; RECOMP_NO_RUN_ENV=1 skips them)\n", n);
 #endif
 }
+#ifdef RECOMP_MOBILE
+#define main recomp_main   /* (a phone's start is runtime/platform/mobile_main.c's SDL_main, which calls this) */
+#endif
 int main(int argc, char **argv) {
 	builtin_env();
 #ifdef __APPLE__

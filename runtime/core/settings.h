@@ -29,7 +29,7 @@
  *                             or Stick, the right-stick stand-in (a game without the hook gets it either way); F8 switches
  *   save_dialog   apputil.c   ask | auto (default ask)   the save-data dialog: the overlay asks (slot list, yes/no), or every question answers itself (the focused slot, YES); RECOMP_SAVE_DIALOG wins
  *   shadow_filter gfx_gpu.c   0 | 1 | 2 (default 1)     shadow-map samples averaged: 0 the game's one, 1 soft, 2 softer (RECOMP_SHADOW_FILTER wins)
- *   aspect_ratio  window.c    native | 21:9 | 32:9 | window   a wider view, for games with a camera hook (RECOMP_ASPECT_HOOK=1; hooks.c aspect_widen)
+ *   aspect_ratio  window.c    native | 21:9 | 32:9 | 16:10 | 3:2 | 4:3 | window   a wider (or taller) view, for games with a camera hook (RECOMP_ASPECT_HOOK=1; hooks.c aspect_widen, window_aspect_taller)
  *   hud_layout    gfx_gpu.c   edges | 16:9 | stretch (default edges)   with a wider view: the 2D elements at their own shape, anchored
  *                             to the screen edge of their third or all to the centre (a 16:9 frame), or stretched to the width; read at each present
  *   full_res_world gfx_gpu.c  0 | 1 (default 1)          the buffers a game draws below the screen's resolution at the full one (RECOMP_TARGET_SCALE; read at each scene)

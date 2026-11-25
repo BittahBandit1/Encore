@@ -107,7 +107,9 @@ static const GfxDraw *backend_draw(const GfxDraw *d, GfxDraw *tmp) {
  * samples, rows as the depth surface declares them; an old capture (no render target size)
  * takes the depth stride for both, its rows being whole */
 static const GfxTarget *scene_dims(const GfxTarget *t, GfxTarget *tmp) {
-	if (t->data || !t->depth || !t->ds_data || t->width) return t;
+	/* (no colour surface: a width of 0, or a placeholder 1x1 -- Persona 3 Dancing's 1088x1088 D32F shadow map arrives 1x1, stride 2,
+	 * and as a 2x1 depth buffer its casters drew into two pixels: no dancer cast a shadow, 2026-11-24) */
+	if (t->data || !t->depth || !t->ds_data || (t->width > 1 && t->height > 1)) return t;
 	*tmp = *t;
 	uint32_t sx = t->ms_x && !t->scale_mode ? t->ms_x : 1, sy = t->ms_y && !t->scale_mode ? t->ms_y : 1;
 	tmp->width = t->rt_width ? t->rt_width * sx : t->ds_stride;

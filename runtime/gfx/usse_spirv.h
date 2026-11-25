@@ -58,7 +58,7 @@ typedef struct {
  * (bytes 1184 and 1200); then lod_bias (member 6, byte 1456), 1520 bytes in all */
 typedef struct { uint32_t sa[256]; float viewport_z[4]; uint32_t win[8][4]; uint32_t tex_srgb[4];   /* tex_srgb words 2-3: the units bound at the render scale, the render scale (snap_fetch) */
                  uint32_t vfetch[4]; uint32_t stream[16][4];
-                 float lod_bias[16]; } UsseDrawUniforms;   /* lod_bias: each unit's texture LOD bias in levels (gfx.h GFX_TEX_LOD_BIAS; usse_spirv.c sample_lod), member 6 at byte 1456 */
+                 float lod_bias[16]; float clip_y[4]; } UsseDrawUniforms;   /* clip_y = { scale - 1, offset, 0, 0 }: clip y becomes y + y*[0] + w*[1] in the vertex epilogue (a narrower aspect's HUD band, gfx_gpu.c hud_layout), member 7 at byte 1520; zeros leave it as it is */   /* lod_bias: each unit's texture LOD bias in levels (gfx.h GFX_TEX_LOD_BIAS; usse_spirv.c sample_lod), member 6 at byte 1456 */
 /* The GPU-side vertex fetch: the vertex program's prologue reads the draw's raw vertex streams (copied as they are into
  * storage buffer 0) and converts each attribute into its PA words itself, exactly as gfx_soft.c's gfx_vertex_pack does on
  * the CPU -- the plan here IS that packer's (GfxPackAttr per slotted attribute: kind 1 raw bytes, 2 F32 lanes, 3 F16

@@ -78,6 +78,11 @@ int overlay_wants_capture(void);
  * it's closed (the bar is pointer-only; the keys and the pad stay the game's). */
 void overlay_process_event(const SDL_Event *event);
 
+/* the touch controller (window.c, settings "touch_controls"): its elements in window coordinates, for overlay.cpp to draw */
+enum { VP_DPAD, VP_TRI, VP_CIR, VP_CRO, VP_SQU, VP_L, VP_R, VP_SEL, VP_START, VP_MENU, VP_N };
+typedef struct { float x, y, r; int kind, pressed; } VpadShape;
+int window_vpad_shapes(VpadShape *out, int max, uint32_t *dpad);   /* how many (0: hidden); dpad: held ways, 1 up 2 right 4 down 8 left */
+
 /* builds one ImGui frame (the pages below) and renders it into `target`, sized w x h pixels, with
  * SDL_GPU_LOADOP_LOAD -- drawn over whatever is already there, never clearing it. `dt_s`: seconds
  * since the overlay last built a frame (0 is fine for the one-shot headless dump). Call only while

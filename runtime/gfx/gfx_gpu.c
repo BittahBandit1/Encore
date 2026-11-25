@@ -407,6 +407,13 @@ static SDL_GPUTextureFormat depth_format(void) {
 	}
 	return f;
 }
+#ifndef ANISO_DEFAULT
+#ifdef RECOMP_MOBILE
+#define ANISO_DEFAULT 4    /* (a phone's GPU: 16x cost Persona 3 Dancing's songs frames on Adreno 710, 2026-11-25) */
+#else
+#define ANISO_DEFAULT 16
+#endif
+#endif
 static uint32_t index_at(const GfxDraw *d, uint32_t i) { return d->index_format ? RD32(d->indices + 4 * i) : RD16(d->indices + 2 * i); }
 
 /* ---------------------------------------------------------------- shader modules, per translated program */
@@ -597,6 +604,26 @@ static int predict_on(void) {   /* (Metal by default, where the shader library i
  * takes one tap: at a PC resolution every sunlit leaf showed hard, texel-sized steps. */
 static int g_points_draw;   /* gfx_gpu_draw: this draw is SCE_GXM_PRIMITIVE_POINTS sprites (get_shader picks the point-sprite variants) */
 static int g_motion_draw;   /* gfx_gpu_draw: get_shader wants a vertex program's motion variant (usse_spirv_set_motion; the motion pass, RECOMP_MV) */
+/* fragment programs whose blend-unit variant a driver would not build (Adreno 710: vkCreateGraphicsPipelines fails on Persona
+ * Dancing's 0x1102482c): their draws take the copy of the target instead, not the software path's seconds a frame */
+static uint32_t fzero_refused[64]; static int n_fzero_refused;
+static int fzero_is_refused(uint32_t h) { const int n = __atomic_load_n(&n_fzero_refused, __ATOMIC_ACQUIRE); for (int i = 0; i < n && i < 64; i++) if (fzero_refused[i] == h) return 1; return 0; }
+static void fzero_refuse(uint32_t h) {
+	static SDL_SpinLock lk; SDL_LockSpinlock(&lk);
+	if (!fzero_is_refused(h) && n_fzero_refused < 64) { fzero_refused[n_fzero_refused] = h; __atomic_store_n(&n_fzero_refused, n_fzero_refused + 1, __ATOMIC_RELEASE);
+		fprintf(stderr, "    gpu: fragment %08x: its blend-unit variant failed to build: copies of the target instead\n", h); }
+	SDL_UnlockSpinlock(&lk);
+}
+/* vertex programs whose GPU-fetch variant (their own vertex decode, vf_plan) a driver would not build a pipeline with, beside
+ * a plain fragment program (Adreno 710: Persona 3 Dancing's vertex e4bb03ff): their draws take the packer's variant */
+static uint64_t vf_refused[64]; static int n_vf_refused;
+static int vf_is_refused(uint32_t h, uint32_t lh) { const uint64_t k = (uint64_t)h << 32 | lh; const int n = __atomic_load_n(&n_vf_refused, __ATOMIC_ACQUIRE); for (int i = 0; i < n && i < 64; i++) if (vf_refused[i] == k) return 1; return 0; }
+static void vf_refuse(uint32_t h, uint32_t lh) {
+	static SDL_SpinLock lk; SDL_LockSpinlock(&lk);
+	if (!vf_is_refused(h, lh) && n_vf_refused < 64) { vf_refused[n_vf_refused] = (uint64_t)h << 32 | lh; __atomic_store_n(&n_vf_refused, n_vf_refused + 1, __ATOMIC_RELEASE);
+		fprintf(stderr, "    gpu: vertex %08x (layout %08x): its GPU-fetch variant failed in a pipeline: the packer's instead\n", h, lh); }
+	SDL_UnlockSpinlock(&lk);
+}
 static int g_fzero_draw;    /* gfx_gpu_draw: this draw's fragment program's framebuffer blend goes to the blend unit -- its usse_fragment_fb_blend class (get_shader picks that variant) */
 static int shadow_filter_want(void) {
 	extern int settings_int(const char *, int);
@@ -1096,7 +1123,7 @@ static SDL_GPUSamplerAddressMode gxm_addr_mode(int m) {
 static int aniso_cur = -1;
 static int aniso_want(void) {
 	extern int settings_int(const char *, int);
-	const char *e = getenv("RECOMP_ANISO"); int n = e ? atoi(e) : settings_int("anisotropy", 16);
+	const char *e = getenv("RECOMP_ANISO"); int n = e ? atoi(e) : settings_int("anisotropy", ANISO_DEFAULT);
 	return n >= 16 ? 16 : n >= 8 ? 8 : n >= 4 ? 4 : n >= 2 ? 2 : 1;
 }
 static SDL_GPUSampler *tex_sampler(TexEntry *e, int minf, int magf, int addru, int addrv, int miplin) {
@@ -1779,10 +1806,10 @@ int gfx_gpu_render_scale_max(void) { return RSCALE_MAX; }
  * gets its own pixels instead of being squeezed -- every target, depth surface, view, viewport, scissor
  * and copy below is RSX wide and RSY high; the texel-addressed shader paths (target views, snap_fetch)
  * take both factors. 1 and rscale at the native aspect. */
-static int rscale_x = 1;
+static int rscale_x = 1, rscale_y = 1;   /* rscale_y: rscale, or more for a narrower aspect (window_aspect_taller: the camera hook opens a t-times taller view into the same guest frame, which gets the rows for it) */
 #define RSX(v) ((uint32_t)(v) * (uint32_t)rscale_x)
-#define RSY(v) ((uint32_t)(v) * (uint32_t)rscale)
-#define SCALED (rscale > 1 || rscale_x > 1)
+#define RSY(v) ((uint32_t)(v) * (uint32_t)rscale_y)
+#define SCALED (rscale_y > 1 || rscale_x > 1)
 /* ---- a target's own resolution (RECOMP_TARGET_SCALE, a game's RUN_ENV: "<w>x<h>:<factor>[,...]"): a render target of that
  * guest size draws at <factor> times the render scale, rounded to whole texels a guest pixel -- a game that renders its
  * world below the screen's resolution (Uncharted: 720x408, composited onto its 960x544 frame) gets the world at the
@@ -1803,9 +1830,9 @@ static void tscale_init(void) {
 int gfx_gpu_target_scale_supported(void) { tscale_init(); return ntscale > 0; }   /* the game names targets to draw finer (the overlay's "Full-resolution world" row) */
 static void target_scale(uint32_t w, uint32_t h, uint8_t *sx, uint8_t *sy) {
 	tscale_init();
-	int x = rscale_x, y = rscale;
+	int x = rscale_x, y = rscale_y;
 	if (ntscale > 0 && settings_int("full_res_world", 1)) for (int k = 0; k < ntscale; k++) if (tscale[k].w == w && tscale[k].h == h) {   /* (settings "full_res_world" 0: the game's own resolution; read at each scene: a change applies at once -- targets at the other scale are new entries, the old ones age out) */
-		int a = (int)((float)rscale_x * tscale[k].f + 0.5f), b = (int)((float)rscale * tscale[k].f + 0.5f);
+		int a = (int)((float)rscale_x * tscale[k].f + 0.5f), b = (int)((float)rscale_y * tscale[k].f + 0.5f);
 		if (a > x) x = a; if (b > y) y = b; break;
 	}
 	*sx = (uint8_t)(x > 8 ? 8 : x); *sy = (uint8_t)(y > 8 ? 8 : y);   /* (8: a 2048-wide target within Metal's 16384 texels) */
@@ -1820,6 +1847,12 @@ static int want_rscale_x(int n) {
 	float k = window_aspect_widen(), xf = (float)n * k;
 	int x = (int)xf; if ((float)x < xf * 0.97f) x++;   /* rounded up, unless within 3%: 32:9 at 2x is 4.03 -- 5 drew 24% more pixels on every wide target for a 0.7% narrower picture (at 1x, 2.01 drew 3x) */
 	return x < n ? n : x > 8 ? (8 > n ? 8 : n) : x;   /* 8: a 2048-wide target stays within Metal's 16384 */
+}
+float window_aspect_taller(void);   /* window.c (gfxreplay.c: 1) */
+static int want_rscale_y(int n) {   /* the same for the rows of a narrower aspect's taller view */
+	float t = window_aspect_taller(), yf = (float)n * t;
+	int y = (int)yf; if ((float)y < yf * 0.97f) y++;
+	return y < n ? n : y > 8 ? (8 > n ? 8 : n) : y;
 }
 /* RECOMP_GPU_PRESENT_NOSYNC=1 (headless measurement): a presented frame is NOT downloaded to guest memory
  * at present when nothing reads it there. With a window the frame goes to the swapchain from its GPU
@@ -1845,8 +1878,8 @@ static void render_scale_init(void) {
 	const char *e = getenv("RECOMP_RENDER_SCALE"); int n = e ? atoi(e) : settings_int("render_scale", 1);   /* the environment over the game's settings.ini */
 	if (n < 1) n = 1; if (n > RSCALE_MAX) n = RSCALE_MAX;
 	if (getenv("RECOMP_GFX_CHECK")) n = 1;
-	rscale = n; rscale_x = want_rscale_x(n); metrics_set_render_scale(n);
-	if (n > 1 || rscale_x > 1) fprintf(stderr, "gpu: render scale %dx (%dx horizontally)\n", n, rscale_x);
+	rscale = n; rscale_x = want_rscale_x(n); rscale_y = want_rscale_y(n); metrics_set_render_scale(n);
+	if (n > 1 || rscale_x > 1 || rscale_y > 1) fprintf(stderr, "gpu: render scale %dx (%dx horizontally, %dx vertically)\n", n, rscale_x, rscale_y);
 }
 /* F2 (window.c): the next scale, 1 -> 2 -> ... -> RSCALE_MAX -> 1, applied after the frame being presented (gfx_gpu_present) */
 void gfx_gpu_render_scale_cycle(void) {
@@ -1920,8 +1953,8 @@ static int fsr_render_scale(void) { static int v = -1; if (v < 0) { const char *
 static int fsr_on(void);
 static int fsr_upscaling(void) { return fsr_on() && fsr_forward && fsr_render_scale() > 0 && fsr_render_scale() < rscale; }
 static void fsr_lo_scale(uint8_t *sx, uint8_t *sy) {   /* the internal scale, its across in proportion to the render scale's (a widened aspect's rscale_x) */
-	const int i = fsr_render_scale(), x = (rscale_x * i + rscale / 2) / rscale;
-	*sx = (uint8_t)(x < 1 ? 1 : x); *sy = (uint8_t)i;
+	const int i = fsr_render_scale(), x = (rscale_x * i + rscale / 2) / rscale, y = (rscale_y * i + rscale / 2) / rscale;
+	*sx = (uint8_t)(x < 1 ? 1 : x); *sy = (uint8_t)(y < 1 ? 1 : y);
 }
 static TargetEntry *get_target_at(const GfxTarget *t, uint8_t sx, uint8_t sy);
 static TargetEntry *get_target(const GfxTarget *t) {
@@ -2176,7 +2209,18 @@ static void pipeline_build(PipeJob *j) {
 		const int guess = j->warm && ((v && v->pred) || (f && f->pred));
 		mtl_archive_want(!guess, v ? __atomic_exchange_n(&v->lib_key, 0, __ATOMIC_ACQ_REL) : 0, f ? __atomic_exchange_n(&f->lib_key, 0, __ATOMIC_ACQ_REL) : 0); }
 #endif
+#ifdef RECOMP_MOBILE
+	/* a phone: one pipeline at a time, and a failure tried once more -- Adreno 710's driver failed pipelines built on the five
+	 * workers at once (the start's warm-up), the same ones built fine another run (2026-11-24) */
+	static SDL_Mutex *pipe_mx; static SDL_AtomicInt pipe_mx_init;
+	if (SDL_CompareAndSwapAtomicInt(&pipe_mx_init, 0, 1)) __atomic_store_n(&pipe_mx, SDL_CreateMutex(), __ATOMIC_RELEASE); else while (!__atomic_load_n(&pipe_mx, __ATOMIC_ACQUIRE)) SDL_Delay(1);
+	SDL_LockMutex(pipe_mx);
 	SDL_GPUGraphicsPipeline *pp = SDL_CreateGPUGraphicsPipeline(gpu(), &j->ci);
+	if (!pp) { fprintf(stderr, "    gpu: pipeline %#x/%#x failed (%s): once more\n", j->vprog, j->fprog, SDL_GetError()); pp = SDL_CreateGPUGraphicsPipeline(gpu(), &j->ci); }
+	SDL_UnlockMutex(pipe_mx);
+#else
+	SDL_GPUGraphicsPipeline *pp = SDL_CreateGPUGraphicsPipeline(gpu(), &j->ci);
+#endif
 #ifdef RECOMP_MTL_ARCHIVE
 	if (mtl_archive_on) mtl_archive_want_clear();   /* (if SDL made none) */
 #endif
@@ -2186,7 +2230,19 @@ static void pipeline_build(PipeJob *j) {
 	  if (mtl_archive_on) from_archive = mtl_archive_last_hit();
 #endif
 	  if (hitch_log() && (dt > 300 || j->async) && !j->p->prebuilt) fprintf(stderr, "    gpu hitch: pipeline %#x/%#x %s in %.2f ms%s\n", j->vprog, j->fprog, from_archive ? "from the archive" : "compiled", dt / 1e3, j->async ? " (by a worker)" : ""); }
-	if (!pp) fprintf(stderr, "    gpu: pipeline %#x/%#x: %s\n", j->vprog, j->fprog, SDL_GetError());
+	if (!pp) {
+		const ShaderEntry *v = j->vse, *f = j->fse; const SDL_GPUGraphicsPipelineCreateInfo *ci = &j->ci;
+		fprintf(stderr, "    gpu: pipeline %#x/%#x: %s -- vertex %08x (layout %08x, points %d, motion %d), fragment %08x (kind %d, fetch %d, fzero %d, pcf %d, cube %#x, snap %#x, motion %d), "
+		        "%u colour targets (format %d, blend %d), depth %d/%d stencil %d, %u vertex buffers %u attributes, prim %d\n",
+		        j->vprog, j->fprog, SDL_GetError(), v ? v->hash : 0, v ? v->layout_hash : 0, v ? v->points : -1, v ? v->motion : -1,
+		        f ? f->hash : 0, f ? f->kind : -9, f ? f->fetch : -1, f ? f->fzero : -1, f ? f->pcf : -1, f ? f->cube_mask : 0, f ? f->snap_mask : 0, f ? f->motion : -1,
+		        ci->target_info.num_color_targets, ci->target_info.num_color_targets ? (int)ci->target_info.color_target_descriptions[0].format : -1,
+		        ci->target_info.num_color_targets ? (int)ci->target_info.color_target_descriptions[0].blend_state.enable_blend : -1,
+		        (int)ci->target_info.has_depth_stencil_target, (int)ci->depth_stencil_state.enable_depth_test, (int)ci->depth_stencil_state.enable_stencil_test,
+		        ci->vertex_input_state.num_vertex_buffers, ci->vertex_input_state.num_vertex_attributes, (int)ci->primitive_type);
+		if (f && f->fzero) fzero_refuse(f->hash);
+		else if (v && v->layout_hash) vf_refuse(v->hash, v->layout_hash);   /* (a plain fragment program: the vertex side's own decode is what's left to drop) */
+	}
 	j->p->pipe = pp;
 	__atomic_store_n(&j->p->pending, 0, __ATOMIC_RELEASE);
 	warm_done(j->wkey, 'p', pp != 0);
@@ -2747,10 +2803,19 @@ hit:
  * have its world squeezed */
 static int hud_draws(void) { static int v = -1; if (v < 0) { const char *e = getenv("RECOMP_HUD_DRAWS"); v = !e ? 0 : !strcmp(e, "scene") ? 2 : !strcmp(e, "2d") ? 1 : 0; } return v; }
 int gfx_gpu_hud_supported(void) { return hud_draws() != 0; }
+/* a draw's clip-space bounds, once a draw: gfx_draw_clip_bounds runs its vertex program on the CPU, and the aspect layouts below
+ * asked for them up to three times a draw (16 vertices for the HUD test, 32 for each menu or play check) -- some 5000 vertex
+ * runs a frame through the interpreter, 15-20 ms of a phone's render thread at a wider aspect (2026-11-24). 16 vertices */
+static uint64_t g_draw_serial, bounds_serial; static int bounds_ok; static float bounds_bb[6];
+static int draw_bounds(const GfxDraw *d, float bb[6]) {
+	if (bounds_serial != g_draw_serial || !g_draw_serial) { bounds_ok = gfx_draw_clip_bounds(d, d->count < 16 ? d->count : 16, bounds_bb); bounds_serial = g_draw_serial; }
+	memcpy(bb, bounds_bb, sizeof bounds_bb); return bounds_ok;
+}
 static int hud_classify(const GfxDraw *d, float out[4]) {   /* 1: a HUD draw, its NDC extent in out */
-	if (window_aspect_widen() < 1.01f || !hud_mode_cur || !hud_draws()) return 0;
+	if ((window_aspect_widen() < 1.01f && window_aspect_taller() < 1.01f) || !hud_mode_cur || !hud_draws()) return 0;
 	uint64_t t0 = us_now(); float b[6];
-	int ok = gfx_draw_clip_bounds(d, 16, b), hud = ok && (hud_draws() == 2 || (b[4] > 0.999f && b[5] < 1.001f)) && b[1] - b[0] < 1.8f && b[3] - b[2] < 1.8f;   /* (full height: a backdrop, see above) */
+	if (d->depth_write && hud_draws() != 2) { t_hud += us_now() - t0; return 0; }   /* (3D: the HUD is flat and writes no depth) */
+	int ok = draw_bounds(d, b), hud = ok && (hud_draws() == 2 || (b[4] > 0.999f && b[5] < 1.001f)) && b[1] - b[0] < 1.8f && b[3] - b[2] < 1.8f;   /* (full height: a backdrop, see above) */
 	t_hud += us_now() - t0;
 	static int log = -1; if (log < 0) log = getenv("RECOMP_HUD_LOG") != 0;
 	if (log) fprintf(stderr, "    hud: vprog %#x %u verts %s x %.3f..%.3f y %.3f..%.3f w %.3f..%.3f\n", d->vprog, d->count, !ok ? "no bounds" : hud ? "HUD" : "not HUD", b[0], b[1], b[2], b[3], b[4], b[5]);
@@ -3211,7 +3276,7 @@ void gfx_gpu_begin_scene(const GfxTarget *t) {
 	 * begin it before the flip), and dropping every surface there left that scene drawing into a
 	 * released target */
 	{ int req = __atomic_exchange_n(&rscale_req, 0, __ATOMIC_RELAXED); if (req && req != rscale && gpu()) { batch_flush("render scale change"); apply_render_scale(req); }
-	  else if (gpu() && want_rscale_x(rscale) != rscale_x) { batch_flush("aspect change"); apply_render_scale(rscale); } }   /* the aspect ratio setting moved: the targets' width with it */
+	  else if (gpu() && (want_rscale_x(rscale) != rscale_x || want_rscale_y(rscale) != rscale_y)) { batch_flush("aspect change"); apply_render_scale(rscale); } }   /* the aspect ratio setting moved: the targets' width with it */
 	{ int a = aniso_want(); if (a != aniso_cur && gpu()) {   /* the anisotropy setting (first scene, or changed): samplers rebuilt */
 		if (aniso_cur >= 0) { batch_flush("anisotropy change"); for (int i = 0; i < ntextures; i++) tex_release_samplers(&textures[i]); views_release_samplers(); }
 		aniso_cur = a; } }
@@ -3229,7 +3294,7 @@ void gfx_gpu_begin_scene(const GfxTarget *t) {
 	scene_first_draw = 1;
 	scene_soft = !scene_entry;
 	scene_depth_entry = 0;
-	scene_sx = scene_entry ? scene_entry->sx : rscale_x; scene_sy = scene_entry ? scene_entry->sy : rscale;   /* (the target's own scale: target_scale) */
+	scene_sx = scene_entry ? scene_entry->sx : rscale_x; scene_sy = scene_entry ? scene_entry->sy : rscale_y;   /* (the target's own scale: target_scale) */
 	if (scene_soft) { gfx_soft_begin_scene(t); return; }   /* gfx_gpu_draw hands every draw of this scene to the software path */
 	scene_entry->alias_in = 0;
 	if (scene_entry != &scratch_entry) target_alias_sync(scene_entry);
@@ -4004,7 +4069,10 @@ static TexEntry *target_view(const GfxTexture *tex, TargetEntry **exact) {
 		if (!dbest || de->gen > dbest->gen) dbest = de;
 	}
 	int d16 = dbest && dbest->fmt == 0x02444000u;   /* a D16 surface, read back as a U16 texture (Unit 13's shadow atlas) */
-	if (dbest && (tex->format & 0xff000000u) != (d16 ? 0x09000000u : 0x15000000u)) dbest = 0;   /* only an X8U24 (or, of D16, a U16) texture reads a depth surface; a scratch depth over a colour target's memory (Unit 13's final pass, never stored) doesn't make that memory depth */
+	int d32f = dbest && dbest->fmt == 0x00044000u;  /* a D32F surface, read back as a 32-bit float texture (Persona 3 Dancing's shadow map: 1088x1088, tiled, sampled
+	                                                 * as 0x13000000 by the stage's shadowMap -- refused here, the floor compared against the map's first upload from
+	                                                 * guest memory, which the GPU never writes, and no dancer cast a shadow, 2026-11-24) */
+	if (dbest && (tex->format & 0xff000000u) != (d16 ? 0x09000000u : d32f ? 0x13000000u : 0x15000000u)) dbest = 0;   /* only an X8U24 (or, of D16, a U16; of D32F, a float) texture reads a depth surface; a scratch depth over a colour target's memory (Unit 13's final pass, never stored) doesn't make that memory depth */
 	if (!best && !dbest) return 0;   /* (after the filter: a depth surface it ruled out, with no colour target here, went on to read best->kind of a null best -- Uncharted, right after an F2 had dropped every target) */
 	int ex = best && best->addr == tex->data && (best->kind == TK_U8 || best->kind == TK_U8S) && (best->format & 0xF1800000u) == 0 && ((best->format >> 20) & 3) == 0
 	         && (tex->format & ~0x30000u) == 0x0c000000u && ((tex->u_mode >> 4) & 3) == 0 && tex->width == best->width && tex->height == best->height;   /* (the texture's gamma bits aside: the shader's sRGB masks handle them) */
@@ -4035,16 +4103,18 @@ static TexEntry *target_view(const GfxTexture *tex, TargetEntry **exact) {
 			for (int k = 0; k < 4; k++) u.swz[k] = (uint32_t)k;
 			const uint32_t msx = dbest->msx ? dbest->msx : 1u, msy = dbest->msy ? dbest->msy : 1u;
 			if (dbest->gpu_newer && view_mapping(dbest->key, dbest->ds_stride, dbest->w * msx, dbest->h * msy, dbest->type, d16 ? 2 : 4, tex, d16 ? 2 : 4, dbest->sx, dbest->sy, &u)) {   /* (the surface's memory: its samples) */
-				u.mode = d16 ? 1u : 0u;   /* the depth view's quantisation: 16 bits, else 24 */
+				u.mode = d16 ? 1u : 0u;   /* the depth view's quantisation: 16 bits, else 24 (a D32F map's too: 6e-8 steps, far finer than any shadow compare) */
 				if (msx > 1 || msy > 1) { u.tgt_w = dbest->w; u.tgt_h = dbest->h; u.ms_x = msx; u.ms_y = msy; }   /* a sample -> the texture's pixel holding it (drawn single-sampled) */
 				SDL_GPUTextureFormat vfmt = view_format(1, (int)u.mode, 0, tex->min_filter || tex->mag_filter); u.vfmt = (uint32_t)vfmt;
 				v = view_entry(tex, vfmt, dbest->sx, dbest->sy); v->vlinear = 0;
 				if (v->view_src != dbest || v->view_gen != dbest->zgen || !v->view_depth) {
 					if (trace_sync()) fprintf(stderr, "gpu trace: view of depth %#x %ux%u for texture %#x fmt %#x %ux%u u%#x (rebuilt)\n", dbest->key, dbest->w, dbest->h, tex->data, tex->format, tex->width, tex->height, tex->u_mode);
 					if (view_render(v, dbest->tex, 1, &u)) { v->view_src = dbest; v->view_gen = dbest->zgen; v->view_depth = 1; } else v = 0;
+					if (d32f) { static int said; if (!said++) fprintf(stderr, "    gpu: float depth %#x %ux%u read as texture %#x %ux%u (a shadow map): %s\n", dbest->key, dbest->w, dbest->h, tex->data, tex->width, tex->height, v ? "through a view of the GPU's depth" : "view failed"); }
 				}
 				if (v) return v;
 			}
+			if (d32f) { static int said; if (!said++) fprintf(stderr, "    gpu: float depth %#x %ux%u for texture %#x %ux%u u%#x: no view (gpu newer %d): from guest memory\n", dbest->key, dbest->w, dbest->h, tex->data, tex->width, tex->height, tex->u_mode, dbest->gpu_newer); }
 			if (trace_sync()) fprintf(stderr, "gpu trace: no view of depth %#x %ux%u (gpu newer %d, gen %llu) for texture %#x fmt %#x %ux%u u%#x: decoded from guest memory\n", dbest->key, dbest->w, dbest->h, dbest->gpu_newer, (unsigned long long)dbest->gen, tex->data, tex->format, tex->width, tex->height, tex->u_mode);
 		} else if (best) {
 			uint32_t tex_bpp; int mode = view_mode(best->format, tex, &tex_bpp, u.swz);
@@ -4106,7 +4176,7 @@ static uint32_t snap_scale(uint32_t snap_mask) {   /* the block snap_fetch steps
 		else if (unit_sx[u] != unit_sx[pick] || unit_sy[u] != unit_sy[pick]) { static int said; if (!said++) fprintf(stderr, "    gpu: a draw's snapped reads are of targets at different scales (%dx%d, %dx%d): the first's block for both\n", unit_sx[pick], unit_sy[pick], unit_sx[u], unit_sy[u]); }
 	}
 	for (int u = 0; u < 16 && pick < 0; u++) if (unit_sx[u]) pick = u;
-	return pick < 0 ? (uint32_t)rscale_x | (uint32_t)rscale << 16 : (uint32_t)unit_sx[pick] | (uint32_t)unit_sy[pick] << 16;
+	return pick < 0 ? (uint32_t)rscale_x | (uint32_t)rscale_y << 16 : (uint32_t)unit_sx[pick] | (uint32_t)unit_sy[pick] << 16;
 }
 /* A single quad (at most six indices) whose float2 attributes all lie in [0, 1]: a sprite drawn with its whole texture
  * once. Its REPEAT units are sampled CLAMPed: the same texels inside, but at a render scale above 1x the pixels along
@@ -4202,6 +4272,7 @@ typedef struct {
 	UsseDrawUniforms vu, fu;
 	int qslot;   /* a visibility query (vis_query_add): its counter in qbuf, -1 for a real draw */
 	int hud; float hud_b[4];   /* a HUD draw (hud_classify) and where it lands (NDC: min x, max x, min y, max y): hud_layout narrows its vp at the flush */
+	uint8_t hud_tile;   /* a HUD draw that is one small triangle: a tile of a menu background pattern (hud_layout leaves it stretched over the whole screen) */
 	uint8_t mv;   /* drawn again in the motion pass (RECOMP_MV: an opaque, depth-writing draw of the main scene) */
 	UsseDrawUniforms pvu;   /* the motion pass's second uniform block: vu with the same draw's SA of the previous frame (mv_prev) */
 } BatchDraw;
@@ -4421,12 +4492,108 @@ static char fm_tag[320];   /* RECOMP_GPU_FENCE_TRACE: the tag of the next fence 
  * group about the centre keeps the centre (the crosshair's ticks); any other keeps its own centre -- objective markers
  * are drawn where the game projects their target (with the widened camera), so they stay on it. 16:9: the edge groups
  * close in to a centred 16:9 frame (their anchor the centre), the rest as in edges. */
+static float hud_sw, hud_sw_k;   /* the same for a wider aspect (hud_layout's end) */
+static float hud_s43, hud_s43_t;   /* hud_layout's shared position factor for a narrower aspect's edges layout, and the aspect it was found at */
+/* a narrower aspect's band (hud_layout, outside play or with the 16:9 HUD layout): every HUD draw squeezed back to its native
+ * shape about the centre line, in the vertex shader (UsseDrawUniforms.clip_y; the viewport left whole: a smaller one clipped
+ * what reaches past the 16:9 frame -- the track list's circle, cut off at the top and bottom where the 4:3 screen has room
+ * for it). Over all of the frame's HUD draws: hud_layout's grouping stops at 256, and a menu has more than that (Persona 3
+ * Dancing's triangle background), which left its buttons' icons last in the frame stretched, off their circles (2026-11-24) */
+/* a song's play screen: the pack's hook marks the frames the dance runs in (display_mark_gameplay), and its lanes -- the tall
+ * arcs at the sides, single HUD draws over half the screen tall -- are on screen. The dance runs on behind the results too,
+ * and laid out as play (groups to the edges) that screen came apart (Persona 3 Dancing on a 20:9 phone, 2026-11-24) */
+static uint64_t lane_frame, lane_seen; static unsigned lanes_now;
+static void lane_note(const float *b) {
+	extern uint64_t display_frames(void); const uint64_t fr = display_frames();
+	if (fr != lane_frame) { lanes_now = 0; lane_frame = fr; }
+	if (b && b[3] - b[2] > 1.0f && b[1] - b[0] < 0.5f && fabsf(0.5f * (b[0] + b[1])) > 0.3f && ++lanes_now >= 2) lane_seen = fr + 1;
+}
+static int play_hud(void) {   /* (the lanes seen in the last half second: a frame or two without them doesn't flip the layout) */
+	extern int display_in_gameplay(void); extern uint64_t display_frames(void);
+	return display_in_gameplay() && lane_seen && display_frames() + 1 < lane_seen + 30;
+}
+/* the menu background's patterns, by size, over a frame (hud_band): this frame's so far and the last's whole */
+typedef struct { float w, h, x0, x1; int m, kind; } TileSize;
+static TileSize tile_cur[96], tile_last[96]; static int n_tile_cur, n_tile_last; static uint64_t tile_sz_frame = ~0ull;
+static void tile_frame_begin(void) {
+	extern uint64_t display_frames(void); const uint64_t fr = display_frames();
+	if (fr == tile_sz_frame) return;
+	if (fr == tile_sz_frame + 1) { memcpy(tile_last, tile_cur, sizeof tile_cur); n_tile_last = n_tile_cur; } else n_tile_last = 0;
+	n_tile_cur = 0; tile_sz_frame = fr;
+}
+static void tile_note(int kind, float w, float h, float x0, float x1) {
+	for (int i = 0; i < n_tile_cur; i++) { TileSize *t = &tile_cur[i];
+		if (t->kind == kind && fabsf(t->w - w) < 0.004f && fabsf(t->h - h) < 0.004f) { t->m++; t->x0 = fminf(t->x0, x0); t->x1 = fmaxf(t->x1, x1); return; } }
+	if (n_tile_cur < 96) tile_cur[n_tile_cur++] = (TileSize){ w, h, x0, x1, 1, kind };
+}
+static int tile_is(int kind, float w, float h, int need, int edge_to_edge) {   /* edge_to_edge: across the whole width, else over half of it */
+	for (int l = 0; l < 2; l++) { const TileSize *T = l ? tile_last : tile_cur; const int nt = l ? n_tile_last : n_tile_cur;
+		for (int i = 0; i < nt; i++) { const TileSize *t = &T[i];
+			if (t->kind != kind || fabsf(t->w - w) >= 0.004f || fabsf(t->h - h) >= 0.004f || t->m < need) continue;
+			if (edge_to_edge ? (t->x0 <= -0.9f && t->x1 >= 0.9f) : t->x1 - t->x0 >= 1.0f) return 1; } }
+	return 0;
+}
+/* axis 0: a wider aspect's menus -- each HUD draw squeezed back about the centre line, so the menu is a 16:9 block in the
+ * middle and comes apart nowhere (grouped to the edges as in play, Persona 3 Dancing's track select tore into wedges on a
+ * 20:9 phone, 2026-11-24); axis 1: a narrower aspect's, the band across the middle. A tile pattern keeps the whole screen */
+static void hud_band(float t, int axis) {
+	int n = 0; int *idx = malloc((size_t)(batch.n > 0 ? batch.n : 1) * sizeof *idx); if (!idx) return;
+	for (int i = 0; i < batch.n; i++) if (batch.d[i].hud) idx[n++] = i;
+	if (hud_mode_cur != 1) {
+		/* a small triangle is a tile only as one of many its size across the width: a button's fan of slices (the Start/Return
+		 * button before the dance) is the menu's, squeezed with it. Tiles (a menu background's pattern) keep the whole screen.
+		 * The other pattern: a grid of equal quads, a dozen or more, across the whole width (Persona 3 Dancing's dotted blue
+		 * under its triangles) -- a tile too. Counted over the whole frame, every batch of it so far and the last frame's: a
+		 * frame drawn in several batches (a copy of the target between draws, many on an Adreno phone) showed each batch part
+		 * of the pattern and part of the track list's circle, and they flipped between squeezed and stretched from frame to
+		 * frame (2026-11-24) */
+		tile_frame_begin();
+		for (int a = 0; a < n; a++) {
+			const BatchDraw *A = &batch.d[idx[a]]; const float *b = A->hud_b, wa = b[1] - b[0], ha = b[3] - b[2];
+			if (A->hud_tile) tile_note(0, wa, ha, b[0], b[1]);
+			if (wa >= 0.2f && ha >= 0.2f && wa <= 0.6f && ha <= 0.6f) tile_note(1, wa, ha, b[0], b[1]);
+		}
+		for (int a = 0; a < n; a++) {
+			BatchDraw *A = &batch.d[idx[a]]; const float *b = A->hud_b, wa = b[1] - b[0], ha = b[3] - b[2];
+			/* (a wider aspect's: the pattern edge to edge -- the track list's circle, dozens of equal slices from the middle
+			 * to the right, passed for one on some frames) */
+			const int tri = A->hud_tile && tile_is(0, wa, ha, 20, axis ? 0 : 1);
+			const int quad = wa >= 0.2f && ha >= 0.2f && wa <= 0.6f && ha <= 0.6f && tile_is(1, wa, ha, 12, 1);
+			A->hud_tile = tri || quad;
+		}
+	}
+	for (int a = 0; a < n; a++) {
+		BatchDraw *B = &batch.d[idx[a]];
+		if (B->hud_tile && hud_mode_cur != 1) continue;
+		SDL_GPUViewport *vp = &B->vp; SDL_Rect *sc = &B->sc;
+		if (!axis) {
+			if (sc->w < (int)(0.98f * vp->w)) {
+				const float x0 = vp->x + 0.5f * vp->w * (1.0f - 1.0f / t) + ((float)sc->x - vp->x) / t;
+				sc->x = (int)floorf(x0); sc->w = (int)ceilf((float)sc->w / t) + 1;
+			}
+			B->vu.clip_y[2] = 1.0f / t - 1.0f;
+			continue;
+		}
+		if (sc->h < (int)(0.98f * vp->h)) {   /* a scissor narrower than the screen (a button's label clipped to it) goes with the draw */
+			const float y0 = vp->y + 0.5f * vp->h * (1.0f - 1.0f / t) + ((float)sc->y - vp->y) / t;
+			sc->y = (int)floorf(y0); sc->h = (int)ceilf((float)sc->h / t) + 1;
+		}
+		B->vu.clip_y[0] = 1.0f / t - 1.0f;
+	}
+	free(idx);
+}
 static void hud_layout(void) {
-	const float k = window_aspect_widen();
-	int idx[256], n = 0;
-	for (int i = 0; i < batch.n && n < 256; i++) if (batch.d[i].hud) idx[n++] = i;
-	if (!n || k < 1.01f) return;
-	int par[256]; float g[256][4];
+	const float k = window_aspect_widen(), t = window_aspect_taller();
+	if (t >= 1.01f) { extern int display_in_gameplay(void); if (hud_mode_cur == 1 || !play_hud()) { hud_band(t, 1); return; } }
+	if (k >= 1.01f) { extern int display_in_gameplay(void); if (hud_mode_cur == 1 || !play_hud()) { hud_band(k, 0); return; } }
+	/* (room for a thousand: Persona 3 Dancing's play screen draws 300-400, its side decorations first -- at 256, what came
+	 * last, the judgements and button prompts, was left stretched and in place some frames and not others, 2026-11-24) */
+	enum { HUD_MAX = 1024 };
+	static int idx[HUD_MAX], par[HUD_MAX], edge[HUD_MAX]; static float g[HUD_MAX][4], anc[HUD_MAX];
+	int n = 0, nall = 0;
+	for (int i = 0; i < batch.n; i++) if (batch.d[i].hud) { if (n < HUD_MAX) idx[n++] = i; nall++; }
+	{ static int said; if (nall > HUD_MAX && !said++) fprintf(stderr, "    gpu: hud_layout: %d HUD draws in a batch, past its %d\n", nall, (int)HUD_MAX); }
+	if (!n || (k < 1.01f && t < 1.01f)) return;
 	for (int a = 0; a < n; a++) {   /* containment: the largest earlier draw holding 60% of this one's box -- a panel's contents
 		 * come after it; what was drawn before is behind it (Uncharted's main-menu labels under a dialog, which went with it) */
 		const float *A = batch.d[idx[a]].hud_b; float areaA = (A[1] - A[0]) * (A[3] - A[2]), best = 0; par[a] = a;
@@ -4438,7 +4605,7 @@ static void hud_layout(void) {
 			else if (areaA <= 0 && A[0] >= C[0] && A[1] <= C[1] && A[2] >= C[2] && A[3] <= C[3]) { par[a] = c; best = areaC; }   /* (a degenerate box: a point or a line inside) */
 		}
 	}
-	for (int a = 0; a < n; a++) { int r = a, guard = 0; while (par[r] != r && guard++ < 256) r = par[r]; par[a] = r; }
+	for (int a = 0; a < n; a++) { int r = a, guard = 0; while (par[r] != r && guard++ < HUD_MAX) r = par[r]; par[a] = r; }
 	for (int a = 0; a < n; a++) if (par[a] == a) memcpy(g[a], batch.d[idx[a]].hud_b, sizeof g[a]);
 	for (int a = 0; a < n; a++) if (par[a] != a) { const float *A = batch.d[idx[a]].hud_b; float *G = g[par[a]];
 		G[0] = fminf(G[0], A[0]); G[1] = fmaxf(G[1], A[1]); G[2] = fminf(G[2], A[2]); G[3] = fmaxf(G[3], A[3]); }
@@ -4452,7 +4619,7 @@ static void hud_layout(void) {
 		for (int x = 0; x < n; x++) if (par[x] == c) par[x] = a;
 		g[a][0] = fminf(A[0], C[0]); g[a][1] = fmaxf(A[1], C[1]); g[a][2] = fminf(A[2], C[2]); g[a][3] = fmaxf(A[3], C[3]);
 	}
-	float anc[256]; int edge[256];   /* per group root: its anchor, and whether it's an edge group (one that crosses the centre never is) */
+	/* anc, edge: per group root: its anchor, and whether it's an edge group (one that crosses the centre never is) */
 	for (int a = 0; a < n; a++) if (par[a] == a) { edge[a] = g[a][0] < -0.88f && g[a][1] < 0 ? -1 : g[a][1] > 0.88f && g[a][0] > 0 ? 1 : 0; anc[a] = 0; }
 	for (int pass = 0, changed = 1; changed && pass < 16; pass++) {   /* a row beside an edge group: the same edge */
 		changed = 0;
@@ -4477,11 +4644,126 @@ static void hud_layout(void) {
 			fprintf(stderr, "    hud group %d: %d draws, x %.3f..%.3f y %.3f..%.3f, edge %d, anchor %.3f\n", a, m, g[a][0], g[a][1], g[a][2], g[a][3], edge[a], anc[a]);
 		}
 	}
+	if (t >= 1.01f) {   /* a narrower aspect: the frame is t times taller than native and every HUD draw t times stretched in height */
+		/* edges only while a song is played (a pack's hook marks those frames, display_mark_gameplay): a menu is panels, labels
+		 * and icons drawn separately, and grouped to the sides they came apart (Persona 3 Dancing's track select, 2026-11-24)
+		 * -- outside play the 16:9 band keeps every screen's layout whole */
+		extern int display_in_gameplay(void);
+		const int band = hud_mode_cur == 1 || !play_hud();
+		if (band && hud_mode_cur != 1) {   /* a small triangle is a tile only as one of many its size across the width: a button's fan
+			 * of slices (the Start/Return button before the dance) is the menu's, squeezed with it */
+			unsigned char keep[n > 0 ? n : 1];
+			for (int a = 0; a < n; a++) {
+				const BatchDraw *A = &batch.d[idx[a]]; keep[a] = 0;
+				if (!A->hud_tile) continue;
+				const float wa = A->hud_b[1] - A->hud_b[0], ha = A->hud_b[3] - A->hud_b[2];
+				int m = 0; float x0 = 9.0f, x1 = -9.0f;
+				for (int c = 0; c < n; c++) {
+					const BatchDraw *C = &batch.d[idx[c]];
+					if (C->hud_tile && fabsf(C->hud_b[1] - C->hud_b[0] - wa) < 0.004f && fabsf(C->hud_b[3] - C->hud_b[2] - ha) < 0.004f) { m++; x0 = fminf(x0, C->hud_b[0]); x1 = fmaxf(x1, C->hud_b[1]); }
+				}
+				keep[a] = m >= 20 && x1 - x0 >= 1.0f;
+			}
+			for (int a = 0; a < n; a++) batch.d[idx[a]].hud_tile = keep[a];
+		}
+		if (band && hud_mode_cur != 1) for (int a = 0; a < n; a++) {   /* a menu background's other pattern: a grid of equal quads, a dozen
+			 * or more, across the whole width (Persona 3 Dancing's dotted blue under its triangles) -- a tile, like the triangles */
+			BatchDraw *A = &batch.d[idx[a]];
+			const float wa = A->hud_b[1] - A->hud_b[0], ha = A->hud_b[3] - A->hud_b[2];
+			if (A->hud_tile || wa < 0.2f || ha < 0.2f || wa > 0.6f || ha > 0.6f) continue;
+			int m = 0; float x0 = 9.0f, x1 = -9.0f;
+			for (int c = 0; c < n; c++) {
+				const float *C = batch.d[idx[c]].hud_b;
+				if (fabsf(C[1] - C[0] - wa) < 0.004f && fabsf(C[3] - C[2] - ha) < 0.004f) { m++; x0 = fminf(x0, C[0]); x1 = fmaxf(x1, C[1]); }
+			}
+			if (m >= 12 && x0 <= -0.98f && x1 >= 0.98f) A->hud_tile = 1;
+		}
+		if (!band && hud_s43 <= 0.0f) {   /* the shared position factor, set once (hud_s43, until the aspect changes): from the lane arcs
+			 * themselves -- single draws over half the screen tall and under a quarter of it wide, which never change -- the largest
+			 * that keeps each on screen at its own shape. From the groups instead, a note or a scratch ring joining a lane moved the
+			 * factor, and every HUD element with it, from frame to frame (Persona 3 Dancing, 2026-11-24) */
+			float sm = 2.0f;
+			for (int a = 0; a < n; a++) {
+				const float *B = batch.d[idx[a]].hud_b, c = 0.5f * (B[0] + B[1]), w = B[1] - B[0], hw = 0.5f * w * t;
+				if (B[3] - B[2] > 1.0f && w < 0.5f && fabsf(c) > 0.3f && hw < 1.0f) { const float b = (1.0f - hw) / fabsf(c); if (b < sm) sm = b; }
+			}
+			if (sm < 2.0f) { hud_s43 = sm > 1.0f ? 1.0f : sm; hud_s43_t = t; fprintf(stderr, "    gpu: narrower HUD: positions x%.3f (lanes to the edges), shapes x%.3f\n", hud_s43, t); }
+		}
+		if (hud_s43 > 0.0f && hud_s43_t != t) hud_s43 = 0.0f;   /* (another aspect: found again) */
+		const float S = hud_s43 > 0.0f ? hud_s43 : 1.0f / t;
+		for (int a = 0; a < n; a++) {
+			SDL_GPUViewport *vp = &batch.d[idx[a]].vp;
+			if (band) {   /* 16:9: each draw squeezed back about the centre line -- the HUD a native-shaped band across the middle (a menu
+				 * moves as one: each group squeezed about its own centre instead tore the track list's circle, drawn as slices, and
+				 * the triangle background, drawn as rows, into stripes -- Persona 3 Dancing, 2026-11-24) */
+				/* (but not a menu background's pattern -- hundreds of single small triangles, Persona 3 Dancing's: squeezed into the
+				 * band it left black bars above and below; stretched, it covers the screen) */
+				if (!(batch.d[idx[a]].hud_tile && hud_mode_cur != 1)) {
+					/* a scissor narrower than the screen (a button's label clipped to it: the dance's Start/Return ring) goes with
+					 * the draw, or it cut the label where the stretched layout had it */
+					SDL_Rect *sc = &batch.d[idx[a]].sc;
+					if (sc->h < (int)(0.98f * vp->h)) {
+						const float y0 = vp->y + 0.5f * vp->h * (1.0f - 1.0f / t) + ((float)sc->y - vp->y) / t;
+						sc->y = (int)floorf(y0); sc->h = (int)ceilf((float)sc->h / t) + 1;
+					}
+					/* the squeeze in the vertex shader (UsseDrawUniforms.clip_y), the viewport left whole: a smaller viewport
+					 * clipped what reaches past the 16:9 frame -- the track list's circle, cut off at the top and bottom where
+					 * the 4:3 screen has room for all of it (Persona 3 Dancing, 2026-11-24) */
+					batch.d[idx[a]].vu.clip_y[0] = 1.0f / t - 1.0f;
+				}
+			} else {   /* edges: the HUD keeps the full height, each group widened back to its own shape (t times). Every group's
+				 * centre goes through ONE mapping, c -> s * c, so a note on its way out lands where its button now is (each group
+				 * about its own centre, as at first, left the hold notes ending short of the lanes pinned to the edges, Persona 3
+				 * Dancing, 2026-11-24); s is the largest that keeps the tall groups (the lanes) on screen, so they end flush with
+				 * the edges; a group that still reaches past an edge is moved in just enough */
+				const float *G = g[par[a]], *B = batch.d[idx[a]].hud_b;
+				/* what joins two places -- a bar from lane to lane (the purple U lines), a hold note's capsule out from the middle --
+				 * scales with the positions (S), so both its ends meet their buttons. Decided by the draw's own box, never its
+				 * group's: a note passing over a U line joined its group and flipped the rule, and the line changed length from
+				 * frame to frame (Persona 3 Dancing, 2026-11-24) */
+				const float bw = B[1] - B[0], bh = B[3] - B[2], bc = 0.5f * (B[0] + B[1]);
+				const int joins = (B[0] < -0.4f && B[1] > 0.4f && bh < 0.3f) || (fabsf(bc) > 0.15f && bw > 0.25f && bh > 0.15f && bh < 1.0f);
+				if (joins || G[3] - G[2] > 1.0f) G = B;   /* (and in a lane, a tall group, each draw by its own box: a button lands at S times its x, where its notes are aimed) */
+				const float c = 0.5f * (G[0] + G[1]), w = G[1] - G[0];
+				const float m = joins ? S : t, hw = 0.5f * w * m;
+				/* (no pulling in at the edges: a lane's two arcs, its buttons as they pulse, each a different width, were pulled in by
+				 * different amounts -- the arcs doubled, the buttons wandered off them from frame to frame; one mapping for every
+				 * centre, a sliver past the edge at most, keeps them together. Persona 3 Dancing, 2026-11-24) */
+				float cn = hw >= 1.0f ? 0.0f : S * c;
+				if (fabsf(m - 1.0f) < 1e-4f) vp->x += 0.5f * (cn - c) * vp->w;   /* (scale 1: a plain move) */
+				else { const float A = (m * c - cn) / (m - 1.0f); vp->x += 0.5f * (A + 1.0f) * vp->w * (1.0f - m); vp->w *= m; }   /* A stays put: c lands on cn, everything about it m times as wide */
+			}
+			n_hud_draws++;
+		}
+		return;
+	}
+	/* a wider aspect, in play: the narrower one's mapping turned round -- every centre through ONE factor, c -> S * c (S from the
+	 * lanes: the largest that keeps each on screen at its own shape, so they end flush with the edges), each draw 1/k as wide
+	 * about it, back to its own shape; what joins two places (a bar from lane to lane, a hold note's capsule) scales with the
+	 * positions instead. Each group anchored to an edge or the middle, as before, sent a note to the edge once it came near a
+	 * lane and joined its group: the notes jumped about (Persona 3 Dancing on a 20:9 phone, 2026-11-24) */
+	if (hud_sw > 0.0f && hud_sw_k != k) hud_sw = 0.0f;
+	if (hud_sw <= 0.0f) {
+		float sm = 9.0f;
+		for (int a = 0; a < n; a++) {
+			const float *B = batch.d[idx[a]].hud_b, c = 0.5f * (B[0] + B[1]), w = B[1] - B[0], hw = 0.5f * w / k;
+			if (B[3] - B[2] > 1.0f && w < 0.5f && fabsf(c) > 0.3f) { const float b = (1.0f - hw) / fabsf(c); if (b < sm) sm = b; }
+		}
+		if (sm < 9.0f) { hud_sw = sm; hud_sw_k = k; fprintf(stderr, "    gpu: wider HUD: positions x%.3f (lanes to the edges), shapes x%.3f\n", hud_sw, 1.0f / k); }
+	}
+	const float S = hud_sw > 0.0f ? hud_sw : 1.0f;
 	for (int a = 0; a < n; a++) {
-		SDL_GPUViewport *vp = &batch.d[idx[a]].vp; const float A = anc[par[a]];
-		vp->x += 0.5f * (A + 1.0f) * vp->w * (1.0f - 1.0f / k); vp->w /= k;   /* NDC A lands where it did; everything about it 1/k as wide */
+		SDL_GPUViewport *vp = &batch.d[idx[a]].vp;
+		const float *G = g[par[a]], *B = batch.d[idx[a]].hud_b;
+		const float bw = B[1] - B[0], bh = B[3] - B[2], bc = 0.5f * (B[0] + B[1]);
+		const int joins = (B[0] < -0.4f && B[1] > 0.4f && bh < 0.3f) || (fabsf(bc) > 0.15f && bw > 0.25f && bh > 0.15f && bh < 1.0f);
+		if (joins || G[3] - G[2] > 1.0f) G = B;
+		const float c = 0.5f * (G[0] + G[1]), m = joins ? S : 1.0f / k, cn = S * c;
+		if (fabsf(m - 1.0f) < 1e-4f) vp->x += 0.5f * (cn - c) * vp->w;
+		else { const float A = (m * c - cn) / (m - 1.0f); vp->x += 0.5f * (A + 1.0f) * vp->w * (1.0f - m); vp->w *= m; }   /* (A stays put: c lands on cn, m times as wide about it) */
 		n_hud_draws++;
 	}
+	(void)anc;
 }
 static void batch_flush_body(const char *why);
 static void batch_flush(const char *why) {
@@ -5710,6 +5992,7 @@ void gfx_gpu_build_status(double *wait_ms, double *total_ms, int *inflight) {
 	pthread_mutex_lock(&bq_m); *inflight = bq_inflight - bq_low; pthread_mutex_unlock(&bq_m);   /* (the recipes' prebuilds aren't the game waiting) */
 }
 void gfx_gpu_draw(const GfxDraw *d) {
+	g_draw_serial++;
 	if (!gpu() || !scene_entry) { if (!gpu() || scene_soft) gfx_soft_draw(d); return; }   /* (no target and no software scene: nothing begun to draw into -- dropped) */
 	disp_note(DISP_DRAWS);
 	if (ao_scene) ao_note_draw(d);   /* the main scene's camera, for its ambient occlusion */
@@ -5775,6 +6058,7 @@ void gfx_gpu_draw(const GfxDraw *d) {
 	}
 	VfPlan plan; vf_plan(d, vl, usse_program_pa_words(vp), &plan);   /* the vertex data path (above) picks the vertex shader variant */
 	ShaderEntry *vs = get_shader(d->vprog, vp, 0, vl, 0, vsa_for_smp, -1, vcube_mask, 0, plan.gpu ? &plan.vf : 0, plan.hash);
+	if (plan.gpu && vs && vf_is_refused(vs->hash, vs->layout_hash)) { plan.gpu = 0; vs = get_shader(d->vprog, vp, 0, vl, 0, vsa_for_smp, -1, vcube_mask, 0, 0, 0); }
 	if (plan.gpu && (!vs || (!shader_pending(vs) && !vs->ok))) { plan.gpu = 0; vs = get_shader(d->vprog, vp, 0, vl, 0, vsa_for_smp, -1, vcube_mask, 0, 0, 0); }   /* (a layout the fetch prologue refused: the packer's variant, as before) */
 	/* fetch mode 1 (no framebuffer read: Vulkan) and a FRAGCOLOR program whose use of the colour it reads is a
 	 * blend the blend unit can do (usse_fragment_fb_blend -- Uncharted's deferred lights add into the HDR target,
@@ -5788,6 +6072,7 @@ void gfx_gpu_draw(const GfxDraw *d) {
 	static int no_additive = -1; if (no_additive < 0) no_additive = getenv("RECOMP_GPU_NO_ADDITIVE") != 0;
 	g_fzero_draw = fl && fl->frag_color_used && fetch_mode() == 1 && !no_additive && (fl->color_type == 0 /* TY_U8 */ ? scene_entry->kind == TK_U8 : (scene_entry->kind == TK_F16 || scene_entry->kind == TK_HDR10))
 	               && !(d->blend.present && (d->blend.color_func || d->blend.alpha_func)) ? usse_fragment_fb_blend(fp) : 0;
+	if (g_fzero_draw && fzero_is_refused(usse_program_hash(fp))) g_fzero_draw = 0;
 	if (g_fzero_draw == USSE_FB_LERP_ALL && (d->stencil_fail || d->depth_fail || d->depth_pass)) g_fzero_draw = 0;   /* (its alpha's second draw re-tests depth EQUAL and must find the stencil unchanged) */
 	if (g_fzero_draw) {
 		static uint32_t told[64]; static int ntold; uint32_t h = usse_program_hash(fp); int seen = 0;
@@ -5839,7 +6124,14 @@ void gfx_gpu_draw(const GfxDraw *d) {
 		if (skip_lossless()) { async_skip(d, "its pipeline is being built"); return; }
 		if (!gpu_overlap()) build_wait(&pipe->pending);   /* (gpu_overlap: recorded pending, the flush waits) */
 	}
-	if (!pipe || (!pipeline_pending(pipe) && !pipe->pipe)) { soft_fallback(d, "no pipeline"); return; }
+	if (!pipe || (!pipeline_pending(pipe) && !pipe->pipe)) {
+		static uint64_t told[64]; static int ntold; const uint64_t key = (uint64_t)d->vprog << 32 | d->fprog; int seen = 0;
+		for (int i = 0; i < ntold; i++) if (told[i] == key) seen = 1;
+		if (!seen && ntold < 64) { told[ntold++] = key;
+			fprintf(stderr, "    gpu: draw %#x/%#x has no pipeline (%s; fragment %08x fzero %d fetch %d kind %d): the software path\n", d->vprog, d->fprog,
+			        !pipe ? "none made" : "its build failed", fs ? fs->hash : 0, fs ? fs->fzero : -1, fs ? fs->fetch : -1, scene_entry ? (int)scene_entry->kind : -1); }
+		soft_fallback(d, "no pipeline"); return;
+	}
 	/* a fragment program's LDST windows (usse_spirv.c's emit_ldst_target): each pointer (+4: the load's own offset) inside
 	 * a GPU colour target -- F16F16F16F16 or 8-bit RGBA, never the scene's own -- whose texture the shader fetches from.
 	 * Killzone's quarter-res pass reads its HDR scene so: through guest memory that was a 4 MB download a frame. */
@@ -6108,6 +6400,91 @@ void gfx_gpu_draw(const GfxDraw *d) {
 	}
 	b->pipe = pipe; b->stencil_ref = d->stencil_ref; b->indexed = indexed; b->nsbuf = vs->nldst || vs_layout_uniform() ? 2 : 1; b->ntsb = ntsb; b->qslot = -1;
 	b->hud = scene_hud && d->viewport_set && !d->viewport_disabled && vp2.w > 0 && hud_classify(d, b->hud_b);   /* the HUD at its native shape (hud_layout, at the flush) */
+	if (b->hud) lane_note(b->hud_b);
+	b->hud_tile = b->hud && d->count == 3 && b->hud_b[1] - b->hud_b[0] < 0.15f && b->hud_b[3] - b->hud_b[2] < 0.15f;
+	/* a narrower aspect's menus: their 3D (the characters of the title, the track select, the dance settings) draws through the
+	 * pack's camera hook with a view t times taller, and lands well below where 16:9 had it against the menu, which the HUD
+	 * layout keeps in a band of 1/t the screen's height. The menu's meshes move up to sit where they did in that band */
+	float menu_vshift = 0.0f, play_widen_m = 0.0f, play_widen_c = 0.0f, play_widen_cn = 0.0f; int menu_squeeze = 0, menu_mesh = 0, pillar = 0, menu_squeeze_x = 0;
+	static uint64_t pic_frame; static unsigned pic_draws_now, pic_draws_last = ~0u;   /* (the draws of this frame and the last: a picture alone is a handful) */
+	if (window_aspect_widen() > 1.01f) { extern uint64_t display_frames(void); const uint64_t fr = display_frames();
+		if (fr != pic_frame) { pic_draws_last = fr == pic_frame + 1 ? pic_draws_now : ~0u; pic_draws_now = 0; pic_frame = fr; }
+		pic_draws_now++; }
+	if (window_aspect_widen() > 1.01f && pic_draws_last <= 12 && pic_draws_now <= 12 && !b->hud && scene_hud && d->count <= 6 && d->tex[0].data && d->viewport_set && !d->viewport_disabled) {
+		/* a wider screen (a phone's 20:9, 21:9): a picture that fills the 16:9 frame -- the logos, the opening movie, a song's
+		 * movie -- at its own shape in the middle, black at the sides, not stretched across. Only an image
+		 * the game loaded or a movie's frame: a full-screen copy of one of its own render targets (the 3D world, drawn wide) stays
+		 * as wide as it was drawn. A screen that is only the picture (a dozen draws at most): a menu's backdrop, under its 3D
+		 * and its text, fills the width with them */
+		float bb[6];
+		int is_target = 0; for (int i = 0; i < ntargets && !is_target; i++) if (targets[i].addr == d->tex[0].data) is_target = 1;
+		if (!is_target && draw_bounds(d, bb) && bb[4] > 0.999f && bb[5] < 1.001f &&
+		    bb[0] <= -0.99f && bb[1] >= 0.99f && bb[2] <= -0.99f && bb[3] >= 0.99f) pillar = 1;
+	}
+	if (window_aspect_taller() > 1.01f) {
+		/* only over a menu that draws the triangle pattern (the track select, the dance settings): a screen that is all 3D (the
+		 * one before the dance, with its stage behind the dancers) keeps the camera's view as it is */
+		extern uint64_t display_frames(void);
+		static uint64_t tile_frame; static unsigned tiles_now, tiles_last;
+		const uint64_t fr = display_frames();
+		if (fr != tile_frame) { tiles_last = fr == tile_frame + 1 ? tiles_now : 0; tiles_now = 0; tile_frame = fr; }
+		if (b->hud_tile) tiles_now++;
+		if (!b->hud && scene_hud && d->viewport_set && !d->viewport_disabled && vp2.w > 0) {
+			/* a menu's 2D draws the HUD test passed over -- too big (Persona 3 Dancing's title rings), or masks (its Start/Return button's): the
+			 * band's shape like the rest of the menu, or they are ellipses t times too tall. Not what covers the whole screen */
+			extern int display_in_gameplay(void);
+			float bb[6] = { 0 };
+			/* (a mesh with depth in it is the menu's 3D, below; the rest is 2D) */
+			if (!play_hud()) {
+				const int okb = draw_bounds(d, bb);
+				menu_mesh = d->count > 6 && (!okb || bb[5] - bb[4] >= 0.001f);
+				if (!menu_mesh && (!okb || !(bb[0] <= -0.99f && bb[1] >= 0.99f && bb[2] <= -0.99f && bb[3] >= 0.99f))) menu_squeeze = 1;
+			}
+		}
+		if (!b->hud && scene_hud && menu_mesh) {
+			extern int display_in_gameplay(void);
+			/* (up over the triangle menus, down over the 3D screens: each back to where its 16:9 view sat in the menu's band) */
+			if (!play_hud()) menu_vshift = (tiles_last > 20 || tiles_now > 20 ? 1.5f : -0.8f) * (1.0f - 1.0f / window_aspect_taller());   /* NDC, up */
+		}
+		if (!b->hud && scene_hud && !d->depth_write && d->viewport_set && !d->viewport_disabled && vp2.w > 0) {
+			/* in play, the big 2D pieces the HUD test passed over -- the scratch rings, near the screen's height: the HUD's
+			 * edges mapping (hud_layout), widened back to their own shape about where their centre goes, or they are ellipses t
+			 * times too tall (Persona 3 Dancing, 2026-11-24) */
+			extern int display_in_gameplay(void);
+			float bb[6] = { 0 };
+			if (play_hud() && hud_mode_cur == 2 && draw_bounds(d, bb) && bb[5] - bb[4] < 0.001f &&
+			    !(bb[0] <= -0.99f && bb[1] >= 0.99f && bb[2] <= -0.99f && bb[3] >= 0.99f) && bb[3] - bb[2] > 0.5f) {
+				const float t = window_aspect_taller(), S = hud_s43 > 0.0f ? hud_s43 : 1.0f / t;
+				play_widen_c = 0.5f * (bb[0] + bb[1]); play_widen_m = t;
+				play_widen_cn = S * play_widen_c;
+				const float hw = 0.5f * (bb[1] - bb[0]) * t;
+				if (hw < 1.0f) { if (play_widen_cn - hw < -1.0f) play_widen_cn = -1.0f + hw; if (play_widen_cn + hw > 1.0f) play_widen_cn = 1.0f - hw; }
+			}
+		}
+	}
+	if (window_aspect_widen() > 1.01f && hud_mode_cur == 2 && !b->hud && scene_hud && !d->depth_write && d->viewport_set && !d->viewport_disabled && vp2.w > 0 && play_hud()) {
+		/* a wider aspect, in play: the big 2D pieces the HUD test passed over (the scratch ring) back to their own shape, their
+		 * centre through the HUD's mapping (hud_layout's end), or they are ellipses k times too wide */
+		float bb[6] = { 0 };
+		if (draw_bounds(d, bb) && bb[5] - bb[4] < 0.001f &&
+		    !(bb[0] <= -0.99f && bb[1] >= 0.99f && bb[2] <= -0.99f && bb[3] >= 0.99f) && bb[3] - bb[2] > 0.5f) {
+			const float k = window_aspect_widen(), S = hud_sw > 0.0f ? hud_sw : 1.0f;
+			play_widen_c = 0.5f * (bb[0] + bb[1]); play_widen_m = 1.0f / k; play_widen_cn = S * play_widen_c;
+		}
+	}
+	if (window_aspect_widen() > 1.01f && hud_mode_cur && !pillar && !b->hud && scene_hud && d->viewport_set && !d->viewport_disabled && vp2.w > 0) {
+		/* a wider aspect's menus: their 2D draws the HUD test passed over -- the track list's disc and its outline, past the
+		 * screen's top and bottom -- squeezed to 16:9 like the rest of the menu (hud_band). Its test reads a few of a draw's
+		 * vertices, and the disc turns: some frames it passed and was squeezed, some it didn't and stayed stretched, and the
+		 * circle changed size (Persona 3 Dancing on a 20:9 phone, 2026-11-24). Not a 3D mesh, not what covers the screen */
+		extern int display_in_gameplay(void);
+		float bb[6] = { 0 };
+		if (!play_hud()) {
+			const int okb = draw_bounds(d, bb);
+			const int mesh = d->count > 6 && (!okb || bb[5] - bb[4] >= 0.001f);
+			if (!mesh && okb && !(bb[0] <= -0.99f && bb[1] >= 0.99f)) menu_squeeze_x = 1;
+		}
+	}
 	if (b->hud) disp_note(DISP_HUD);
 	b->mv = 0;
 	TargetEntry *mvt = lit_after ? (TargetEntry *)mv_main_entry : scene_entry;   /* (whose motion target: the main target's for a deferred renderer's later surfaces) */
@@ -6129,6 +6506,19 @@ void gfx_gpu_draw(const GfxDraw *d) {
 	}
 	if (fetch_ev >= 0 && !b->hud) fetch_narrow(d, vs, &batch.ev[fetch_ev], vw, sx0, sy0, sx1, sy1);
 	b->vp = vp2; b->sc = (SDL_Rect){ sx0 * scene_sx, sy0 * scene_sy, (sx1 - sx0) * scene_sx, (sy1 - sy0) * scene_sy };
+	if (pillar) { const float k = window_aspect_widen(); b->vp.x += 0.5f * b->vp.w * (1.0f - 1.0f / k); b->vp.w /= k; }   /* (the picture at 16:9, above) */
+	if (play_widen_m > 0.0f && fabsf(play_widen_m - 1.0f) > 1e-4f) {   /* (the scratch ring's widening, above: c lands on cn, m times as wide about it) */
+		const float m = play_widen_m, A = (m * play_widen_c - play_widen_cn) / (m - 1.0f);
+		b->vp.x += 0.5f * (A + 1.0f) * b->vp.w * (1.0f - m); b->vp.w *= m;
+	}
+	if (menu_squeeze_x) {   /* (a wider aspect's menu 2D, above: its scissor with it) */
+		const float k = window_aspect_widen(), vx = b->vp.x, vw = b->vp.w;
+		if (b->sc.w < (int)(0.98f * vw)) { b->sc.x = (int)floorf(vx + 0.5f * vw * (1.0f - 1.0f / k) + ((float)b->sc.x - vx) / k); b->sc.w = (int)ceilf((float)b->sc.w / k) + 1; }
+	}
+	if (menu_squeeze) {   /* (the band's squeeze, as hud_layout gives the HUD -- in the vertex shader, below; its scissor here) */
+		const float t = window_aspect_taller(), vy = b->vp.y, vh = b->vp.h;
+		if (b->sc.h < (int)(0.98f * vh)) { b->sc.y = (int)floorf(vy + 0.5f * vh * (1.0f - 1.0f / t) + ((float)b->sc.y - vy) / t); b->sc.h = (int)ceilf((float)b->sc.h / t) + 1; }
+	}
 	if (mv_jit_scene && !b->hud) { b->vp.x += mv_jx; b->vp.y += mv_jy; mv_jit_draws++; }   /* (M3 jitter: the motion pass draws with the same viewport, its depth test agrees) */
 	else if (!b->hud && composite_mesh(d, pipe)) { float jx, jy; mv_jitter(mv_qframe, &jx, &jy); b->vp.x += jx; b->vp.y += jy; mv_jit_draws++; }
 	b->vring_off = vring_off; b->vbytes = vbytes; b->iring_off = iring_off; b->nidx = nverts; b->first_vertex = first_vertex; b->isize = isize; b->ibytes = 4 * iwords;
@@ -6142,6 +6532,10 @@ void gfx_gpu_draw(const GfxDraw *d) {
 		int vz_on = d->viewport_set && !d->viewport_disabled;
 		b->vu.viewport_z[0] = b->fu.viewport_z[0] = vz_on ? d->vp_zoff : 0.0f; b->vu.viewport_z[1] = b->fu.viewport_z[1] = vz_on ? d->vp_zscale : 1.0f;
 		b->vu.viewport_z[2] = b->vu.viewport_z[3] = b->fu.viewport_z[2] = b->fu.viewport_z[3] = 0;
+		memset(b->vu.clip_y, 0, sizeof b->vu.clip_y); memset(b->fu.clip_y, 0, sizeof b->fu.clip_y);
+		if (menu_squeeze) b->vu.clip_y[0] = 1.0f / window_aspect_taller() - 1.0f;   /* (a menu's 2D: the band, above) */
+		b->vu.clip_y[1] = menu_vshift;   /* (a menu's 3D: its move, above; NDC up) */
+		if (menu_squeeze_x) b->vu.clip_y[2] = 1.0f / window_aspect_widen() - 1.0f;   /* (a wider aspect's menu 2D, above) */
 		if (g_points_draw) {   /* point sprites: half a target pixel in NDC per axis, signed for the screen's directions (gfx_soft.c's render_points_interp) */
 			float kx, ky; int ydown, xleft = 0;
 			if (d->viewport_set && d->viewport_disabled) { kx = ky = 1; ydown = 1; }
@@ -6320,9 +6714,9 @@ static void apply_render_scale(int n) {
 	}
 	nviews = 0;
 	scene_entry = 0; scene_depth_entry = 0;
-	rscale = n; rscale_x = want_rscale_x(n); metrics_set_render_scale(n);
+	rscale = n; rscale_x = want_rscale_x(n); rscale_y = want_rscale_y(n); metrics_set_render_scale(n);
 	settings_set_int("render_scale", n); settings_save();   /* F2 / the menu: kept for the next run */
-	fprintf(stderr, "gpu: render scale %dx (%dx horizontally)\n", n, rscale_x);
+	fprintf(stderr, "gpu: render scale %dx (%dx horizontally, %dx vertically)\n", n, rscale_x, rscale_y);
 }
 /* ---- F5's frame history (RECOMP_FRAME_HISTORY=n presents, default 180 with a window: 3 s at 60 fps, 0 off). A flicker of a frame or two
  * (Killzone's HUD, 2026-10-25) is over before F12's capture starts: the capture caught the frame after it. So the last n
