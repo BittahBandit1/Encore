@@ -17,6 +17,7 @@ double fov_scale(double fov);           /* a vertical fov (radians) under the fo
 void widen_aspect_reg(Cpu *c, int reg); /* a register holding 960/544, widened by aspect_widen() */
 void recomp_ihook_frame_dt(Cpu *c, int reg);
 uint64_t display_frames(void);
+int display_frame_rate(void);
 int display_frame_rate_60(void);
 float display_frame_dt(void);
 int window_mouse_delta(float *dx, float *dy); float window_mouse_sens(void); int window_mouse_invert(void); int window_raw_look(void);   /* the mouse look (window.c) */
@@ -25,6 +26,7 @@ int window_mouse_delta(float *dx, float *dy); float window_mouse_sens(void); int
 extern void (*hook_seq_arm)(const char *);
 extern void (*recomp_on_bad_call)(Cpu *, uint32_t);
 extern void (*hook_stall_long)(uint64_t stall_us);
+extern void (*hook_on_frame)(void);
 
 static inline float rdf(uint32_t a) { float f; memcpy(&f, G(a), 4); return f; }   /* a guest float */
 static inline void wrf(uint32_t a, float f) { memcpy(G(a), &f, 4); }

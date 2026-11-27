@@ -105,6 +105,7 @@ static void h_avcdec_query_mem(Cpu *c) {   /* (codec, const SceAvcdecQueryDecode
 	RET(0);
 }
 
+uint64_t video_last_picture_frame;   /* the presented frame (display_frames) when a movie picture was last decoded: display.c's RECOMP_MOVIE_30 */   /* (defined without FFmpeg too: display.c reads it) */
 #ifdef RECOMP_AVCODEC
 typedef struct {
 	AVCodecContext *ctx; AVPacket *pkt; AVFrame *frm;
@@ -143,7 +144,6 @@ static int au_annexb(Dec *d, const uint8_t *p, uint32_t n) {
 
 static inline uint8_t clamp8(int v) { return v < 0 ? 0 : v > 255 ? 255 : (uint8_t)v; }
 /* a decoded picture into the caller's SceAvcdecPicture (size, SceAvcdecFrame at +4, SceAvcdecInfo at +0x44) */
-uint64_t video_last_picture_frame;   /* the presented frame (display_frames) when a movie picture was last decoded: display.c's RECOMP_MOVIE_30 */
 static void put_picture(Dec *d, uint32_t pic, const AVFrame *f) {
 	{ extern uint64_t display_frames(void); video_last_picture_frame = display_frames() + 1; }
 	uint32_t type = RD32(pic + 4), pitch = RD32(pic + 8), bufh = RD32(pic + 0x10), p0 = RD32(pic + 0x3c), p1 = RD32(pic + 0x40);

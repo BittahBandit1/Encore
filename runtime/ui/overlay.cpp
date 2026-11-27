@@ -41,6 +41,11 @@
  *     window to attach one to): the caller's own w/h stand in for a display size, there is no
  *     pointer, and RECOMP_OVERLAY_DUMP_UI picks what to force on screen (see overlay.h).
  */
+#ifdef RECOMP_MOBILE
+#define ANISO_DEFAULT 4
+#else
+#define ANISO_DEFAULT 16
+#endif
 #include "imgui.h"
 #include "imgui_internal.h"   /* ClosePopupsExceptModals (Escape with a bar menu open: overlay_bar_dismiss below); ImFontAtlasTextureBlockConvert (prompts_load) */
 #include "backends/imgui_impl_sdl3.h"
@@ -64,11 +69,12 @@
 
 extern "C" {
 #include "online/m2.h"   /* (online_status: the Game page's Online now) */
+int window_mouse_look_default(void);   /* window.c: RECOMP_MOUSE_LOOK */
 int net_online(void); const char *net_online_needs(void);
 /* display.c */
 void display_set_paused(int on);
 /* window.c */
-int window_get_aspect(void); void window_set_aspect(int mode);
+int window_get_aspect(void); void window_set_aspect(int mode); int window_get_vsync(void); void window_set_vsync(int on); int window_vsync_locked(void);
 int window_get_fullscreen(void); void window_set_fullscreen(int on);
 int window_raw_look(void); void window_set_raw_look(int on);
 int window_controls_count(void);
@@ -86,7 +92,7 @@ int display_pstv_looked(void);   /* display.c: the game asked for a PS TV's pad 
 /* window.c: the swapchain's size in pixels (0 x 0 before the first frame); wider aspect support */
 void window_pixel_size(uint32_t *w, uint32_t *h);
 int window_aspect_supported(void);
-float window_aspect_widen(void);
+float window_aspect_widen(void); float window_aspect_taller(void);
 /* metrics.c: the F1 overlay's level, direct (not just cycling) and F1's cycle, and the live fps for the Performance page */
 int metrics_osd_level(void); void metrics_osd_set(int level); void metrics_osd_cycle(void);
 double metrics_fps(void);
@@ -224,6 +230,18 @@ static bool game_option(const char *name) {
 	return false;
 }
 static void set_frame_rate(int fr) { P.fr = fr; settings_set_int("frame_rate", fr); settings_save(); }
+/* F3, or a Steam Deck's R5 (window.c): the next frame rate, 30 -> 60 -> 90 -> 120 -> 30, at once (display.c reads the setting
+ * every frame), with a toast saying which */
+extern "C" void overlay_cycle_frame_rate(void) {
+	static const int rates[4] = {30, 60, 90, 120};
+	const int cur = settings_int("frame_rate", 30); int i = 0;
+	while (i < 4 && rates[i] <= cur) i++;
+	const int next = rates[i % 4];
+	set_frame_rate(next);
+	char b[64]; snprintf(b, sizeof b, "%d fps%s  [F3]", next, next > 30 ? " (experimental)" : "");
+	overlay_toast_titled("Frame rate", b, 2.0);
+	fprintf(stderr, "    frame rate: %d (F3 / R5)\n", next);
+}
 static void set_tcs(float v) { P.tcs = v; settings_set_float("touch_cursor_speed", v); settings_save(); }
 static void set_gyro(int on) { P.gyro = on != 0; settings_set_int("gyro", P.gyro); settings_save(); }
 static void set_gyro_pose(int flat) { P.gyro_flat = flat != 0; settings_set_str("gyro_pose", flat ? "flat" : "upright"); settings_save(); }
@@ -239,6 +257,7 @@ static const char *const g_shortcuts[][3] = {
 	{"This menu (pauses the game)", "F10 (Esc closes it)", "Guide, or Back + Start together"},
 	{"On-screen stats: off, FPS, full", "F1", "\u2014"},
 	{"Resolution: 1\u00d7 to 6\u00d7", "F2", "\u2014"},
+	{"Frame rate: 30, 60, 90, 120 in turn", "F3", "R5 (Steam Deck)"},
 	{"The rear camera's lamp", "F7", "\u2014"},
 	{"Capture a frame (to captures/)", "F12", "\u2014"},
 	{"Mark the log (for a bug report: \"that just happened\")", "F5", "\u2014"},
@@ -283,20 +302,27 @@ static void page_display(void) {
 	}
 	ui::row("Picture fit", "How the picture fills the window.");
 	{ int am = window_get_aspect(); if (ui::segmented(g_aspect_names, 3, &am)) window_set_aspect(am); }
-	ui::row("Widescreen", window_aspect_supported() ? "Shows more of the game at the sides." : "This game has no widescreen support yet.");
-	{	static const char *const ids[4] = {"native", "21:9", "32:9", "window"}, *const names[4] = {"Off##ar", "21:9##ar", "32:9##ar", "Window##ar"};
-		char cur[16]; settings_str("aspect_ratio", "native", cur, sizeof cur);
-		int v = 0; for (int i = 0; i < 4; i++) if (!strcmp(cur, ids[i])) v = i;
+	ui::row("Aspect ratio", window_aspect_supported() ? "The game's own picture at another shape: more of it at the sides (wider), or above and below (narrower: 4:3, 3:2 and 16:10 "
+	        "screens -- iPads, Steam Deck, laptops). Fit: the window's or screen's own shape." : "This game draws only its own 16:9 picture.");
+	{	static const char *const ids[7] = {"native", "4:3", "3:2", "16:10", "21:9", "32:9", "window"},
+		                  *const names[7] = {"16:9##ar", "4:3##ar", "3:2##ar", "16:10##ar", "21:9##ar", "32:9##ar", "Fit##ar"};
+#ifdef RECOMP_MOBILE
+		const char *dflt = "window";
+#else
+		const char *dflt = "native";
+#endif
+		char cur[16]; settings_str("aspect_ratio", dflt, cur, sizeof cur);
+		int v = 0; for (int i = 0; i < 7; i++) if (!strcmp(cur, ids[i])) v = i;
 		ImGui::BeginDisabled(!window_aspect_supported());
-		if (ui::segmented(names, 4, &v)) { settings_set_str("aspect_ratio", ids[v]); settings_save(); }
+		if (ui::segmented(names, 7, &v)) { settings_set_str("aspect_ratio", ids[v]); settings_save(); }
 		ImGui::EndDisabled();
 	}
 	if (gfx_gpu_hud_supported()) {
-		ui::row("HUD", "With widescreen on: the HUD at its own shape, at the screen's edges or in a 16:9 frame in the middle; or stretched to the width.");
+		ui::row("HUD", "At another aspect ratio: the HUD at its own shape, at the screen's edges or in a 16:9 frame in the middle; or stretched to fit.");
 		static const char *const ids[3] = {"edges", "16:9", "stretch"}, *const names[3] = {"Edges##hud", "16:9##hud", "Stretched##hud"};
 		char cur[16]; settings_str("hud_layout", "edges", cur, sizeof cur);
 		int v = 0; for (int i = 0; i < 3; i++) if (!strcmp(cur, ids[i])) v = i;
-		ImGui::BeginDisabled(!window_aspect_supported() || window_aspect_widen() < 1.01f);
+		ImGui::BeginDisabled(!window_aspect_supported() || (window_aspect_widen() < 1.01f && window_aspect_taller() < 1.01f));
 		if (ui::segmented(names, 3, &v)) { settings_set_str("hud_layout", ids[v]); settings_save(); }
 		ImGui::EndDisabled();
 	}
@@ -333,7 +359,7 @@ static void page_display(void) {
 	}
 	ui::row("Texture filtering", "Keeps textures crisp when seen at an angle.");
 	{	static const int an[5] = {1, 2, 4, 8, 16}; static const char *const names[5] = {"Off##af", "2×##af", "4×##af", "8×##af", "16×##af"};
-		int cur = settings_int("anisotropy", 16), v = 4; for (int i = 0; i < 5; i++) if (an[i] == cur) v = i;
+		int cur = settings_int("anisotropy", ANISO_DEFAULT), v = 4; for (int i = 0; i < 5; i++) if (an[i] == cur) v = i;
 		if (ui::segmented(names, 5, &v)) { settings_set_int("anisotropy", an[v]); settings_save(); }
 	}
 	ui::row("Shadow edges", "How soft the edges of shadows are.");
@@ -353,8 +379,11 @@ static void page_performance(void) {
 static void page_game(void) {
 	prefs_load();
 	if (!ui::rows_begin("game")) return;
-	ui::row("Frame rate", "60 is experimental: parts of a game timed in fixed 1/30 s steps can run fast.");
-	{ static const char *const names[2] = {"30##fr", "60##fr"}; int v = P.fr >= 60; if (ui::segmented(names, 2, &v)) set_frame_rate(v ? 60 : 30); }
+	ui::row("Frame rate", "60, 90 and 120 are experimental: parts of a game timed in fixed 1/30 s steps can run fast. 90 suits a Steam Deck OLED, 120 a 120 Hz display.");
+	{ static const char *const names[4] = {"30##fr", "60##fr", "90##fr", "120##fr"}; static const int rates[4] = {30, 60, 90, 120};
+	  int v = P.fr >= 120 ? 3 : P.fr >= 90 ? 2 : P.fr >= 60 ? 1 : 0; if (ui::segmented(names, 4, &v)) set_frame_rate(rates[v]); }
+	ui::row("V-sync", window_vsync_locked() ? "Set by this game's configuration." : "On: frames wait for the display's refresh -- no tearing, the steadiest pacing. Off: lower latency; the newest frame is shown at each refresh where the display allows it, otherwise the picture can tear.");
+	{ bool on = window_get_vsync() != 0; if (window_vsync_locked()) ImGui::BeginDisabled(); if (ui::toggle("vsync", &on)) window_set_vsync(on ? 1 : 0); if (window_vsync_locked()) ImGui::EndDisabled(); }
 	if (game_option("fov")) {
 		ui::row("Field of view", "A wider view. 1.00× is the game's own.");
 		ImGui::SetNextItemWidth(-FLT_MIN); if (ImGui::SliderFloat("##fov", &P.fov, 0.75f, 1.5f, "%.2f×")) set_fov(P.fov);
@@ -378,7 +407,7 @@ static void page_game(void) {
 		if (ui::segmented(names, 3, &v)) { settings_set_int("controller_layout", v); settings_save(); }
 	}
 	if (game_option("online")) {
-		ui::row("Play online", "The game's online modes with other Project Nativ players, on your network and over the internet. They see your online name and your computer's IP address, as in any peer-to-peer game. Applies the next time the game starts.");
+		ui::row("Play online", "The game's online modes with other Encore players, on your network and over the internet. They see your online name and your computer's IP address, as in any peer-to-peer game. Applies the next time the game starts.");
 		if (net_online_needs()) { char t[128]; snprintf(t, sizeof t, "Needs update %s: this copy is another version, and rooms only match their own. Add the update in the launcher.", net_online_needs()); ImGui::TextWrapped("%s", t); }
 		else { bool on = settings_int("online", 1) != 0; if (ui::toggle("online", &on)) { settings_set_int("online", on ? 1 : 0); settings_save(); } }
 		if (net_online()) {   /* how it stands (status.c), every half second */
@@ -444,7 +473,7 @@ static void page_controls(void) {
 			if (ui::segmented(names, 3, &v)) { settings_set_str("input_mode", ids[v]); settings_save(); }
 		}
 		ui::row("Mouse look", "The mouse turns the camera and aims; left button R, right button L.");
-		{ bool look = settings_int("mouse_look", 1) != 0; if (ui::toggle("ml", &look)) { settings_set_int("mouse_look", look ? 1 : 0); settings_save(); } }
+		{ bool look = settings_int("mouse_look", window_mouse_look_default()) != 0; if (ui::toggle("ml", &look)) { settings_set_int("mouse_look", look ? 1 : 0); settings_save(); } }
 		ui::row("Mouse aim", "Direct: the game turns exactly as far as the mouse moves (games with direct aim; the others use Stick by themselves). Stick: the mouse moves the right stick. F8 switches.");
 		{ static const char *const names[2] = {"Direct##ma", "Stick##ma"}; int v = window_raw_look() ? 0 : 1; if (ui::segmented(names, 2, &v)) window_set_raw_look(v == 0); }
 		ui::row("Mouse sensitivity");
@@ -506,7 +535,7 @@ static void page_help(void) {
 		ImVec2 p = ImGui::GetCursorScreenPos(); const float h = ImGui::GetFontSize() * 1.5f;
 		ImGui::Dummy(ImVec2(ui::wordmark(ImGui::GetWindowDrawList(), p, h), h));
 	}
-	ImGui::TextWrapped("Project Nativ: this PS Vita game, statically recompiled to native code, running on this computer's own CPU and GPU.");
+	ImGui::TextWrapped("Encore (built on Project Nativ): this PS Vita game, statically recompiled to native code, running on this computer's own CPU and GPU.");
 	const char *title = std::getenv("RECOMP_TITLE");
 	int v = SDL_GetVersion();
 	ImGui::TextDisabled("%s  ·  Dear ImGui %s  ·  SDL %d.%d.%d", title && *title ? title : "unknown title", IMGUI_VERSION, SDL_VERSIONNUM_MAJOR(v), SDL_VERSIONNUM_MINOR(v), SDL_VERSIONNUM_MICRO(v));
@@ -536,7 +565,7 @@ static void build_ui(void) {
 	ImGui::Begin("##menu", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoScrollbar);
 	ImGui::PopStyleColor();
 	/* header: the game, Paused, Resume */
-	{	const char *name = std::getenv("RECOMP_GAME_NAME"); if (!name || !*name) name = std::getenv("RECOMP_TITLE"); if (!name || !*name) name = "Project Nativ";
+	{	const char *name = std::getenv("RECOMP_GAME_NAME"); if (!name || !*name) name = std::getenv("RECOMP_TITLE"); if (!name || !*name) name = "Encore";
 		ui::heading(name, em * 1.35f);
 		ImGui::SameLine(0, em * 0.7f); ImGui::SetCursorPosY(ImGui::GetCursorPosY() + em * 0.18f); ui::chip("Paused", ui::accent);
 		float rw = ImGui::CalcTextSize("Resume").x + ImGui::GetStyle().FramePadding.x * 2;
@@ -601,7 +630,7 @@ enum {
 	HOT_PX = 4,          /* the top-edge zone: the pointer resting within this many points of the edge opens the bar */
 	TAB_NEAR_PX = 48,    /* the pull tab shows while the pointer is within this of the top */
 };
-static const float HOT_DWELL_S = 0.18f, HIDE_S = 1.0f, SLIDE_S = 0.16f, PIN_S = 4.0f, TOAST_S = 4.5f, CURSOR_HIDE_S = 3.0f;
+static const float HOT_DWELL_S = 0.18f, HIDE_S = 1.0f, SLIDE_S = 0.16f, PIN_S = 4.0f, TOAST_S = 4.5f, CURSOR_HIDE_S = 5.0f;
 static float g_bar_vis;                 /* 0 hidden (parked above the window's top edge) .. 1 fully down */
 static bool g_bar_want;                 /* where it's heading */
 static double g_hot_since = -1;         /* when the pointer entered the top-edge zone (-1: it isn't there) */
@@ -658,7 +687,11 @@ static void menu_view(void) {
 	if (game_option("character_detail")) { ImGui::TextDisabled("Character detail"); ImGui::SetNextItemWidth(170); if (ImGui::SliderFloat("##chr", &P.chr, 1.0f, 8.0f, "%.1fx")) set_chr(P.chr); }
 	if (ImGui::BeginMenu("Frame rate")) {
 		if (ImGui::MenuItem("30", nullptr, P.fr < 60)) set_frame_rate(30);
-		if (ImGui::MenuItem("60 (experimental)", nullptr, P.fr >= 60)) set_frame_rate(60);
+		if (ImGui::MenuItem("60", nullptr, P.fr >= 60 && P.fr < 90)) set_frame_rate(60);
+		if (ImGui::MenuItem("90 (experimental)", nullptr, P.fr >= 90 && P.fr < 120)) set_frame_rate(90);
+		if (ImGui::MenuItem("120 (experimental)", nullptr, P.fr >= 120)) set_frame_rate(120);
+		ImGui::Separator();
+		if (ImGui::MenuItem("V-sync", nullptr, window_get_vsync() != 0, !window_vsync_locked())) window_set_vsync(!window_get_vsync());
 		ImGui::EndMenu();
 	}
 	if (ImGui::BeginMenu("On-screen stats")) {
@@ -879,6 +912,44 @@ static void build_marks(void) {
 		if (m.cursor) { dl->AddLine(ImVec2(m.x - r - 4, m.y), ImVec2(m.x + r + 4, m.y), col, 1.5f); dl->AddLine(ImVec2(m.x, m.y - r - 4), ImVec2(m.x, m.y + r + 4), col, 1.5f); }
 	}
 }
+/* the touch controller (window.c window_vpad_shapes): translucent buttons over the picture, brighter while held -- the
+ * Vita's own: a d-pad, the face buttons with their symbols, L and R, Select and Start, and the menu's button at the top */
+static void build_vpad(void) {
+	VpadShape el[VP_N]; uint32_t dpad = 0;
+	const int n = window_vpad_shapes(el, VP_N, &dpad);
+	if (!n) return;
+	ImDrawList *dl = ImGui::GetForegroundDrawList();
+	const ImU32 fill = IM_COL32(20, 20, 30, 70), fill_on = IM_COL32(255, 255, 255, 110), edge = IM_COL32(255, 255, 255, 120);
+	for (int i = 0; i < n; i++) {
+		const VpadShape &e = el[i]; const ImVec2 c(e.x, e.y); const float r = e.r;
+		if (e.kind == VP_DPAD) {   /* a cross of four arms, each lit while held */
+			const float a = 0.36f * r;
+			const ImVec2 arm[4][2] = {{ImVec2(c.x - a, c.y - r), ImVec2(c.x + a, c.y - a)}, {ImVec2(c.x + a, c.y - a), ImVec2(c.x + r, c.y + a)},
+			                          {ImVec2(c.x - a, c.y + a), ImVec2(c.x + a, c.y + r)}, {ImVec2(c.x - r, c.y - a), ImVec2(c.x - a, c.y + a)}};
+			dl->AddRectFilled(ImVec2(c.x - a, c.y - a), ImVec2(c.x + a, c.y + a), fill);
+			for (int k = 0; k < 4; k++) { dl->AddRectFilled(arm[k][0], arm[k][1], (dpad >> k) & 1 ? fill_on : fill, 0.25f * a); dl->AddRect(arm[k][0], arm[k][1], edge, 0.25f * a, 0, 2.0f); }
+			continue;
+		}
+		const bool round = e.kind >= VP_TRI && e.kind <= VP_SQU;
+		if (round || e.kind == VP_MENU) { dl->AddCircleFilled(c, r, e.pressed ? fill_on : fill); dl->AddCircle(c, r, edge, 0, 2.0f); }
+		else { const ImVec2 p0(c.x - 1.3f * r, c.y - 0.6f * r), p1(c.x + 1.3f * r, c.y + 0.6f * r); dl->AddRectFilled(p0, p1, e.pressed ? fill_on : fill, 0.6f * r); dl->AddRect(p0, p1, edge, 0.6f * r, 0, 2.0f); }
+		const float g = 0.45f * r;
+		switch (e.kind) {   /* the symbols in the Vita's colours */
+		case VP_TRI: dl->AddTriangle(ImVec2(c.x, c.y - g), ImVec2(c.x + 0.87f * g, c.y + 0.5f * g), ImVec2(c.x - 0.87f * g, c.y + 0.5f * g), IM_COL32(64, 226, 160, 230), 3.0f); break;
+		case VP_CIR: dl->AddCircle(c, 0.8f * g, IM_COL32(255, 102, 102, 230), 0, 3.0f); break;
+		case VP_CRO: dl->AddLine(ImVec2(c.x - 0.75f * g, c.y - 0.75f * g), ImVec2(c.x + 0.75f * g, c.y + 0.75f * g), IM_COL32(124, 178, 232, 230), 3.0f);
+		             dl->AddLine(ImVec2(c.x + 0.75f * g, c.y - 0.75f * g), ImVec2(c.x - 0.75f * g, c.y + 0.75f * g), IM_COL32(124, 178, 232, 230), 3.0f); break;
+		case VP_SQU: dl->AddRect(ImVec2(c.x - 0.7f * g, c.y - 0.7f * g), ImVec2(c.x + 0.7f * g, c.y + 0.7f * g), IM_COL32(255, 105, 248, 230), 0, 0, 3.0f); break;
+		case VP_MENU: for (int k = -1; k <= 1; k++) dl->AddLine(ImVec2(c.x - 0.45f * r, c.y + k * 0.3f * r), ImVec2(c.x + 0.45f * r, c.y + k * 0.3f * r), edge, 2.0f); break;
+		default: {
+			const char *t = e.kind == VP_L ? "L" : e.kind == VP_R ? "R" : e.kind == VP_SEL ? "SELECT" : "START";
+			ImFont *font = ImGui::GetFont(); const float fs = (e.kind == VP_L || e.kind == VP_R ? 0.7f : 0.42f) * r * 1.6f;
+			const ImVec2 sz = font->CalcTextSizeA(fs, FLT_MAX, 0.0f, t);
+			dl->AddText(font, fs, ImVec2(c.x - 0.5f * sz.x, c.y - 0.5f * sz.y), IM_COL32(255, 255, 255, 200), t);
+		}
+		}
+	}
+}
 /* the save-data dialog (apputil.c through savedlg.h): the game's save / load / delete list, a yes/no question,
  * or a card the game closes itself (Saving..., a progress bar) -- over the picture while the game waits on it,
  * the game running underneath (it polls the dialog every frame; nothing pauses). The pad: up/down (left/right
@@ -1032,6 +1103,7 @@ static void build_closed(void) {
 	if (g_tab_a > 0) build_tab(w, t);
 	if (g_intro) build_intro();   /* (the touch card in place of the pause banner; the markers drawn over it) */
 	build_marks();
+	if (g_has_window && !g_open) build_vpad();
 	if (g_has_window) build_save_dialog(w, hgt);
 	if (g_paused && !g_intro) build_pause_banner(w, hgt);
 	toasts_take(t);
@@ -1143,8 +1215,9 @@ static void prompt(ImDrawList *dl, int k, ImVec2 c, float size, ImU32 col) {   /
 	const ImVec2 p(roundf((c.x - size * 0.5f) * fb) / fb, roundf((c.y - size * 0.5f) * fb) / fb);   /* (on whole pixels: sharp) */
 	dl->AddImage(atlas->TexRef, p, ImVec2(p.x + size, p.y + size), uv, ImVec2(uv.x + d.x, uv.y + d.y), col);
 }
+extern "C" int window_pad_touchpad(void);   /* window.c: RECOMP_PAD_TOUCHPAD */
 static void pad_names(const char **l, const char **r, const char **a, bool *touchpad, int *fam) {   /* the first pad's own button names and icons */
-	*l = "L1"; *r = "R1"; *a = "Cross"; *touchpad = true; *fam = FAM_PS;   /* (the Vita's own names, and a DualShock 4's or DualSense's: unless the pad says otherwise) */
+	*l = "L1"; *r = "R1"; *a = "Cross"; *touchpad = window_pad_touchpad() != 0; *fam = FAM_PS;   /* (the Vita's own names, and a DualShock 4's or DualSense's: unless the pad says otherwise) */
 	int n = 0; SDL_JoystickID *ids = SDL_GetGamepads(&n);
 	if (ids && n > 0) {
 		const SDL_GamepadType t = SDL_GetGamepadTypeForID(ids[0]);
@@ -1216,7 +1289,11 @@ static void intro_demo(ImDrawList *dl, int dev, bool on, int fam, ImVec2 p, floa
 static void build_intro(void) {
 	const double t = g_intro_at >= 0 ? g_intro_at : ImGui::GetTime();
 	prompts_load();
-	if (g_has_window && (g_intro_dev < 0 || g_intro_done < 0)) g_intro_dev = window_kbm_active() ? DEV_KBM : DEV_PAD;   /* (the device last used, as play sees it; headless, the one asked for) */
+#ifdef RECOMP_MOBILE
+	if (g_has_window && (g_intro_dev < 0 || g_intro_done < 0)) g_intro_dev = SDL_HasGamepad() ? DEV_PAD : DEV_TOUCH;   /* (a phone: its screen, unless a controller is in hand) */
+#else
+	if (g_has_window && (g_intro_dev < 0 || g_intro_done < 0)) g_intro_dev = window_kbm_active() ? DEV_KBM : DEV_PAD;
+#endif   /* (the device last used, as play sees it; headless, the one asked for) */
 	if (g_intro_done < 0 && g_has_window) {   /* a real touch on either panel, through the in-game path: done (its input says which device) */
 		int keys[8], xs[8], ys[8];
 		for (int port = 0; port < 2 && g_intro_done < 0; port++) {
@@ -1267,7 +1344,11 @@ static void build_intro(void) {
 	ImGui::Dummy(ImVec2(0, em * 0.2f));
 	if (g_intro_done < 0) { ImGui::PushStyleColor(ImGuiCol_Text, ui::accent); ImGui::TextUnformatted("Try it now to continue."); ImGui::PopStyleColor(); }
 	else ImGui::TextUnformatted("Back to the game.");
+#ifdef RECOMP_MOBILE
+	ui::muted_wrapped("The menu button at the top opens the menu, with every control.");
+#else
 	ui::muted_wrapped("F10 opens the menu, with every control. Esc skips this.");
+#endif
 	ImGui::End();
 	ImGui::PopStyleVar();
 }

@@ -29,7 +29,7 @@
  *                             or Stick, the right-stick stand-in (a game without the hook gets it either way); F8 switches
  *   save_dialog   apputil.c   ask | auto (default ask)   the save-data dialog: the overlay asks (slot list, yes/no), or every question answers itself (the focused slot, YES); RECOMP_SAVE_DIALOG wins
  *   shadow_filter gfx_gpu.c   0 | 1 | 2 (default 1)     shadow-map samples averaged: 0 the game's one, 1 soft, 2 softer (RECOMP_SHADOW_FILTER wins)
- *   aspect_ratio  window.c    native | 21:9 | 32:9 | window   a wider view, for games with a camera hook (RECOMP_ASPECT_HOOK=1; hooks.c aspect_widen)
+ *   aspect_ratio  window.c    native | 21:9 | 32:9 | 16:10 | 3:2 | 4:3 | window   a wider (or taller) view, for games with a camera hook (RECOMP_ASPECT_HOOK=1; hooks.c aspect_widen, window_aspect_taller)
  *   hud_layout    gfx_gpu.c   edges | 16:9 | stretch (default edges)   with a wider view: the 2D elements at their own shape, anchored
  *                             to the screen edge of their third or all to the centre (a 16:9 frame), or stretched to the width; read at each present
  *   full_res_world gfx_gpu.c  0 | 1 (default 1)          the buffers a game draws below the screen's resolution at the full one (RECOMP_TARGET_SCALE; read at each scene)
@@ -46,7 +46,7 @@
  *   fov           hooks.c     a multiplier, 1.0 = the game's own vertical field of view (Unit 13's
  *                             camera update, Uncharted's render camera; culling included; RECOMP_FOV wins; read live, so the
  *                             menu's slider applies at once)
- *   frame_rate    display.c   30 | 60                   60: the swap interval capped at one vblank
+ *   frame_rate    display.c   30 | 60 | 90 | 120        60+: swap interval capped at 1 edge (90/120: a 90/120 Hz present grid)
  *                             (experimental; RECOMP_FRAME_RATE wins; read every frame)
  *   touch_cursor_speed  window.c  a multiplier, 1.0 default   the bumper touch cursor's speed (either stick)
  *   gyro          motion.c    0 | 1 (default 1)         a DS4/DualSense gyro as the Vita's motion sensor

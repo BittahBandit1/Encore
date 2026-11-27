@@ -53,14 +53,33 @@ static void h_net_dlg_result(Cpu *c) {
  * did. Answered "nothing new to accept" (kind 2): there is no PSN to show terms for. */
 static void h_eula_dlg_result(Cpu *c) { if (A0) { for (int i = 0; i < 0x2c; i += 4) WR32(A0 + i, 0); WR32(A0 + 4, 2); } RET(0); }
 static void h_zero(Cpu *c) { RET(0); }
+static const char *fs_root_drm(void) { return getenv("RECOMP_FS") ? getenv("RECOMP_FS") : "fs"; }
 static void h_drm_open(Cpu *c) {   /* every add-on licensed; RECOMP_NP_LOG names the ones the game asks for (Killzone's Botzone: P000000000001957) */
 	static int log = -1; if (log < 0) log = getenv("RECOMP_NP_LOG") != 0;
 	/* RECOMP_ADDCONT_NONE=1: no add-on is licensed (the error the console gives for content not installed) -- a test that
 	 * doesn't have a game's add-on files, or wants to start without them (Persona 4: Dancing All Night shows a notice per
 	 * add-on at every boot, ~1500 frames of a scripted run) */
 	static int none = -1; if (none < 0) none = getenv("RECOMP_ADDCONT_NONE") != 0;
-	if (log && A0) { char id[18]; memcpy(id, G(A0), 17); id[17] = 0; fprintf(stderr, "    np: add-on licence %s -> %s\n", id, none ? "not installed" : "licensed"); }
-	RET(none ? 0x80100604u : 0);
+	/* an add-on whose files aren't in addcont0: isn't licensed either, as on a console without it installed. Licensed
+	 * anyway, P3D went on to mount it, failed, and tried again with a new thread every time the track select showed a
+	 * song that wanted it -- until the thread table was full and the menu stuck (2026-11-23) */
+	int missing = 0; char id[18] = "";
+	if (A0) {
+		memcpy(id, G(A0), 17); id[17] = 0;
+		for (char *q = id; *q; q++) if (*q == '/' || *q == '\\' || *q == '.') { *q = 0; break; }   /* (a plain id: nothing outside the folder) */
+		if (id[0]) {
+			extern void host_path_fold(char *buf, size_t root_len);
+			char p[1024]; snprintf(p, sizeof p, "%s/addcont0/%s", fs_root_drm(), id);
+			host_path_fold(p, strlen(fs_root_drm()));
+			struct stat st; missing = stat(p, &st) || !S_ISDIR(st.st_mode);
+		}
+	}
+	const int refuse = none || missing;
+	if ((log || missing) && id[0]) { static char said[64][18]; static int nsaid; int seen = 0;
+		for (int i = 0; i < nsaid; i++) if (!strcmp(said[i], id)) seen = 1;
+		if (!seen) { if (nsaid < 64) snprintf(said[nsaid++], 18, "%s", id);
+			fprintf(stderr, "    np: add-on licence %s -> %s\n", id, none ? "not installed" : missing ? "not installed (no files in addcont0)" : "licensed"); } }
+	RET(refuse ? 0x80100604u : 0);
 }
 static void h_is_game(Cpu *c) { RET(1); }
 

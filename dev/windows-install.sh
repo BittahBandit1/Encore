@@ -1,11 +1,11 @@
 #!/bin/bash
-# A self-contained Windows install of Project Nativ in one folder, made on macOS or Linux: windows-install.sh <folder>
+# A self-contained Windows install of Encore in one folder, made on macOS or Linux: windows-install.sh <folder>
 #   <folder>/                   the shipped tools (vitarecomp dist: pipeline, runtime, packs, ...) and version.txt
 #   <folder>/toolchain/         llvm-mingw for Windows hosts (the compiler a game build runs on the player's PC), SDL3,
 #                               zlib and FFmpeg's H.264 decoder built for Windows (runtime/platform/win/setup-toolchain.sh's,
 #                               without its downloads and build trees), each with its licence
 #   <folder>/python/            python-build-standalone for Windows, requirements.txt's packages in its site-packages
-#   <folder>/Project Nativ.exe  the launcher, SDL3.dll beside it; it finds the folder from where it sits
+#   <folder>/Encore.exe  the launcher, SDL3.dll beside it; it finds the folder from where it sits
 # Run again over the same folder to update it (dist removes only what it wrote; python and llvm-mingw are kept when
 # current). x86-64 Windows 10 and later. Needs the cross toolchain built here first ($ATIV_WIN_TOOLCHAIN, default
 # ~/toolchains/ativ-win: runtime/platform/win/setup-toolchain.sh). The player's library is not part of it.
@@ -59,6 +59,6 @@ fi
   --platform win_amd64 --python-version "${PY_VER%.*}" --implementation cp --target "$OUT/python/Lib/site-packages" -r "$ROOT/requirements.txt"
 
 # the launcher, cross-built with the developer's toolchain, at the top of the folder
-TARGET=windows ATIV_WIN_TOOLCHAIN=$WT zsh "$ROOT/launcher/build.sh" "$OUT/Project Nativ.exe"
-[[ -n ${NATIV_SIGN_CMD:-} ]] && $NATIV_SIGN_CMD "$OUT/Project Nativ.exe"
+TARGET=windows ATIV_WIN_TOOLCHAIN=$WT zsh "$ROOT/launcher/build.sh" "$OUT/Encore.exe"
+[[ -n ${NATIV_SIGN_CMD:-} ]] && $NATIV_SIGN_CMD "$OUT/Encore.exe"
 echo "install: $OUT ($(cat "$OUT/version.txt"); $(du -sh "$OUT" | cut -f1))"

@@ -41,6 +41,7 @@
 #include "metrics.h"
 #include "settings.h"
 #include "overlay.h"
+#include <math.h>
 
 enum { SELECT = 0x1, START = 0x8, UP = 0x10, RIGHT = 0x20, DOWN = 0x40, LEFT = 0x80, LTRIG = 0x100, RTRIG = 0x200,
        TRIANGLE = 0x1000, CIRCLE = 0x2000, CROSS = 0x4000, SQUARE = 0x8000,
@@ -59,6 +60,26 @@ static volatile uint32_t buttons;
 static volatile uint8_t sticks[4] = {128, 128, 128, 128};
 static int active;
 static int self_paced; static uint64_t last_paced_us;   /* a present mode that doesn't wait for vsync: the present loop paces itself */
+/* ---- V-sync (settings "vsync", the menu's Display page; RECOMP_PRESENT_MODE=vsync|mailbox|immediate wins, read at start):
+ * on, the swapchain waits for the display's refresh (no tearing, the steadiest pacing); off, mailbox where the display has
+ * it (the newest frame at each refresh, no tearing, less latency) and immediate otherwise (tears). Changed from the menu
+ * it applies at the present loop's next pass, on its own thread (the swapchain's). */
+static SDL_GPUDevice *gpu;
+static SDL_Window *win;
+static volatile int vsync_pending = -1;   /* the menu's change, for the present loop to apply */
+int window_get_vsync(void) { const char *pe = getenv("RECOMP_PRESENT_MODE"); if (pe) return !strcmp(pe, "vsync") || !strcmp(pe, "fifo"); return settings_int("vsync", 1) != 0; }
+int window_vsync_locked(void) { return getenv("RECOMP_PRESENT_MODE") != 0; }   /* the environment chose: the menu shows it, greyed */
+void window_set_vsync(int on) { if (window_vsync_locked()) return; settings_set_int("vsync", on != 0); settings_save(); vsync_pending = on != 0; }
+static void present_mode_apply(SDL_GPUPresentMode pm) {
+	int paced = 0;
+	if (pm != SDL_GPU_PRESENTMODE_VSYNC) {
+		if (!SDL_WindowSupportsGPUPresentMode(gpu, win, pm)) pm = pm == SDL_GPU_PRESENTMODE_MAILBOX ? SDL_GPU_PRESENTMODE_IMMEDIATE : SDL_GPU_PRESENTMODE_MAILBOX;
+		paced = SDL_WindowSupportsGPUPresentMode(gpu, win, pm) && SDL_SetGPUSwapchainParameters(gpu, win, SDL_GPU_SWAPCHAINCOMPOSITION_SDR, pm);
+	}
+	if (!paced) { SDL_SetGPUSwapchainParameters(gpu, win, SDL_GPU_SWAPCHAINCOMPOSITION_SDR, SDL_GPU_PRESENTMODE_VSYNC); pm = SDL_GPU_PRESENTMODE_VSYNC; }
+	self_paced = paced;
+	fprintf(stderr, "    window: present mode %s\n", !self_paced ? "vsync" : pm == SDL_GPU_PRESENTMODE_MAILBOX ? "mailbox" : "immediate");
+}
 static volatile int touch_down, touch_x, touch_y;   /* the mouse as the front touch panel (1920x1088) */
 /* Gamepad touch -- the agreed scheme (memory: input-touch-mapping-design): the triggers are L and R;
  * the bumpers are touch modifiers. A DS4/DualSense touchpad's fingers touch the front panel finger
@@ -108,6 +129,11 @@ static SDL_Window *win;
  * through window_mouse_delta and turns it into its camera directly, no stick curve in between; with no
  * such hook taking it (none for the game, or not in play) the motion is a right-stick stand-in instead.
  * The window thread writes, game threads read: the motion is two fixed-point accumulators, exchanged. */
+/* the capture ("mouse_look"): on by default; a pack's RUN_ENV RECOMP_MOUSE_LOOK=0 makes it off by default -- a game with no
+ * camera to turn (the Persona Dancing games: rhythm on the buttons) keeps a visible pointer over the picture, hidden after
+ * a few seconds still (overlay.cpp), instead of a captured mouse that turns nothing. The menu's setting still wins. */
+int window_mouse_look_default(void) { static int def = -1; if (def < 0) { const char *e = getenv("RECOMP_MOUSE_LOOK"); def = !(e && *e == '0'); } return def; }   /* (overlay.cpp's toggle shows it too) */
+static int mouse_look_on(void) { return settings_int("mouse_look", window_mouse_look_default()); }
 static int kbm_auto;                       /* auto mode's current choice: 1 keyboard+mouse, 0 pad */
 static char kbm_why[48];                   /* what made that choice last (logged as the scheme changes) */
 static volatile int kbm_on, rel_on;
@@ -244,16 +270,40 @@ void window_set_fullscreen(int on) {
  * picture would only be stretched. 1 = native (960:544, 1.765:1). */
 static volatile uint32_t win_pw, win_ph;   /* the swapchain's size in pixels, as the present loop last saw it */
 int window_aspect_supported(void) { static int v = -1; if (v < 0) { const char *e = getenv("RECOMP_ASPECT_HOOK"); v = e && *e == '1'; } return v; }
+/* the picture's ratio the setting asks for (RECOMP_ASPECT wins: headless tests), 0 native */
+static float aspect_target(void) {
+	static const char *env = (const char *)-1; if (env == (const char *)-1) env = getenv("RECOMP_ASPECT");   /* (read once: this runs per draw) */
+	char b[16];
+#ifdef RECOMP_MOBILE
+	const char *dflt = "window";   /* (a phone or tablet: the picture fills its screen -- an iPad's 4:3 or 10:7, a phone's 19.5:9) */
+#else
+	const char *dflt = "native";
+#endif
+	if (env) snprintf(b, sizeof b, "%s", env); else settings_str("aspect_ratio", dflt, b, sizeof b);
+	float a = !strcmp(b, "21:9") ? 21.0f / 9.0f : !strcmp(b, "32:9") ? 32.0f / 9.0f : !strcmp(b, "16:10") ? 1.6f : !strcmp(b, "3:2") ? 1.5f : !strcmp(b, "4:3") ? 4.0f / 3.0f : 0;
+	{	/* any other "W:H" (a screen's own pixels, 2388:1668 for an 11-inch iPad Pro): its ratio */
+		float w = 0, h = 0;
+		if (!a && sscanf(b, "%f:%f", &w, &h) == 2 && w > 0 && h > 0) a = w > h ? w / h : h / w;
+	}
+	if (!strcmp(b, "window") && win_pw && win_ph) a = (float)win_pw / (float)win_ph;
+	return a;
+}
 float window_aspect_widen(void) {
 	if (!window_aspect_supported()) return 1.0f;
-	static const char *env = (const char *)-1; if (env == (const char *)-1) env = getenv("RECOMP_ASPECT");   /* (read once: this runs per draw) */
-	char b[16]; if (env) snprintf(b, sizeof b, "%s", env); else settings_str("aspect_ratio", "native", b, sizeof b);   /* RECOMP_ASPECT wins (headless tests) */
-	const float native = 960.0f / 544.0f;
-	float a = !strcmp(b, "21:9") ? 21.0f / 9.0f : !strcmp(b, "32:9") ? 32.0f / 9.0f : 0;
-	if (!strcmp(b, "window") && win_pw && win_ph) a = (float)win_pw / (float)win_ph;
+	const float native = 960.0f / 544.0f, a = aspect_target();
 	float k = a > 0 ? a / native : 1.0f;
-	return k < 1.02f ? 1.0f : k > 2.5f ? 2.5f : k;   /* narrower than native: native (letterboxed as before) */
+	return k < 1.02f ? 1.0f : k > 2.5f ? 2.5f : k;   /* narrower than native: window_aspect_taller */
 }
+/* and narrower than native (4:3, 3:2, 16:10, a narrow window): the factor t the game's vertical view is extended by -- its
+ * camera hook opens the view t times taller (the same horizontal view), gfx_gpu.c renders the frame with t times the rows,
+ * and the window shows it t times taller than native. 1 = native or wider. */
+float window_aspect_taller(void) {
+	if (!window_aspect_supported()) return 1.0f;
+	const float native = 960.0f / 544.0f, a = aspect_target();
+	float t = a > 0 ? native / a : 1.0f;
+	return t < 1.02f ? 1.0f : t > 2.0f ? 2.0f : t;
+}
+static float picture_shape(void) { return (960.0f / 544.0f) * window_aspect_widen() / window_aspect_taller(); }   /* the picture's width : height */
 /* the visible source sub-rect (sx,sy,sw,sh: fit/stretch show it all; fill crops it, centred, to the
  * window's own aspect) and where it lands in the window (dx,dy,dw,dh) -- source and window sizes in
  * any consistent unit (window points for mouse_to_touch's 960x544; actual texture pixels, which may
@@ -268,14 +318,14 @@ static void present_rect(float ww, float wh, float sw, float sh,
 		*dx = 0; *dy = 0; *dw = ww; *dh = wh;
 		break;
 	case ASPECT_FILL: {
-		float wa = ww / wh, sa = (960.0f / 544.0f) * window_aspect_widen();   /* the picture's shape, whatever the frame's pixel ratio (gfx_gpu.c may render it wider) */
+		float wa = ww / wh, sa = picture_shape();   /* the picture's shape, whatever the frame's pixel ratio (gfx_gpu.c may render it wider) */
 		if (wa > sa) { *sw_out = sw; *sh_out = sh * sa / wa; *sx = 0; *sy = (sh - *sh_out) * 0.5f; }
 		else { *sh_out = sh; *sw_out = sw * wa / sa; *sy = 0; *sx = (sw - *sw_out) * 0.5f; }
 		*dx = 0; *dy = 0; *dw = ww; *dh = wh;
 		break;
 	}
 	default: {   /* ASPECT_FIT: the whole frame, letterboxed, shown window_aspect_widen() times wider than native */
-		float ew = sh * (960.0f / 544.0f) * window_aspect_widen();   /* the picture's width at this height: its shape, not the frame's pixel ratio (gfx_gpu.c may render it wider) */
+		float ew = sh * picture_shape();   /* the picture's width at this height: its shape, not the frame's pixel ratio (gfx_gpu.c may render it wider) */
 		float s = ww / ew < wh / sh ? ww / ew : wh / sh;
 		*sx = 0; *sy = 0; *sw_out = sw; *sh_out = sh;
 		*dw = ew * s; *dh = sh * s; *dx = (ww - *dw) * 0.5f; *dy = (wh - *dh) * 0.5f;
@@ -428,7 +478,103 @@ static void finger_script(void) {
 		p = strchr(p, ';'); if (p) p++;
 	}
 }
+/* ---- the touch controller: a Vita's buttons drawn over the picture (overlay.cpp vpad_draw), for a phone or tablet with
+ * no controller in hand. settings "touch_controls": auto (the default on a phone: shown while no controller is
+ * connected, gone the moment one is), on, off (the desktop's default). A finger that lands on one of its buttons is the
+ * controller's until it lifts -- sliding across the face buttons or round the d-pad presses what it's over now, as a
+ * rhythm game's quick moves need; any other finger touches the Vita's screen as before. The menu button opens the menu
+ * (there is no F10 or Guide button on a phone). Placed in the window's safe area (a notch, the home indicator). */
+static int vp_on(void) {
+	static int mode = -1;   /* 0 off, 1 on, 2 auto */
+	if (mode < 0) {
+		char b[8];
+#ifdef RECOMP_MOBILE
+		settings_str("touch_controls", "auto", b, sizeof b);
+#else
+		settings_str("touch_controls", "off", b, sizeof b);
+#endif
+		mode = !strcmp(b, "on") ? 1 : !strcmp(b, "off") ? 0 : 2;
+	}
+	if (overlay_is_open()) return 0;
+	return mode == 1 || (mode == 2 && !SDL_HasGamepad());
+}
+static SDL_FingerID vp_id[ST_FINGERS]; static int vp_el[ST_FINGERS], vp_down[ST_FINGERS]; static uint32_t vp_fbits[ST_FINGERS];
+static volatile uint32_t vpad_buttons;   /* what its fingers hold: window_input adds it to the pad's */
+static void vp_layout(VpadShape el[VP_N]) {
+	int w = 0, h = 0; SDL_GetWindowSize(win, &w, &h);
+	SDL_Rect sa = {0, 0, w, h}; SDL_GetWindowSafeArea(win, &sa);
+	const float H = (float)sa.h, x0 = (float)sa.x, x1 = (float)(sa.x + sa.w), y0 = (float)sa.y, y1 = (float)(sa.y + sa.h);
+	const float fr = 0.075f * H, fd = 0.12f * H, fy = y1 - 0.31f * H, fx = x1 - 0.25f * H;
+	el[VP_DPAD] = (VpadShape){x0 + 0.25f * H, y1 - 0.31f * H, 0.175f * H, VP_DPAD, 0};
+	el[VP_TRI] = (VpadShape){fx, fy - fd, fr, VP_TRI, 0}; el[VP_CIR] = (VpadShape){fx + fd, fy, fr, VP_CIR, 0};
+	el[VP_CRO] = (VpadShape){fx, fy + fd, fr, VP_CRO, 0}; el[VP_SQU] = (VpadShape){fx - fd, fy, fr, VP_SQU, 0};
+	el[VP_L] = (VpadShape){x0 + 0.13f * H, y0 + 0.11f * H, 0.085f * H, VP_L, 0}; el[VP_R] = (VpadShape){x1 - 0.13f * H, y0 + 0.11f * H, 0.085f * H, VP_R, 0};
+	el[VP_SEL] = (VpadShape){0.5f * (x0 + x1) - 0.13f * H, y1 - 0.065f * H, 0.05f * H, VP_SEL, 0};
+	el[VP_START] = (VpadShape){0.5f * (x0 + x1) + 0.13f * H, y1 - 0.065f * H, 0.05f * H, VP_START, 0};
+	el[VP_MENU] = (VpadShape){0.5f * (x0 + x1), y0 + 0.055f * H, 0.045f * H, VP_MENU, 0};
+}
+static const uint32_t vp_bit[VP_N] = { 0, TRIANGLE, CIRCLE, CROSS, SQUARE, LTRIG, RTRIG, SELECT, START, 0 };
+/* the bits a finger at (x, y) holds on element k (its d-pad: eight ways), and for the face buttons the one it's over now */
+static uint32_t vp_hit(const VpadShape el[VP_N], int *k, float x, float y) {
+	if (*k == VP_DPAD) {
+		const float dx = x - el[VP_DPAD].x, dy = y - el[VP_DPAD].y, d = sqrtf(dx * dx + dy * dy);
+		if (d < 0.2f * el[VP_DPAD].r) return 0;   /* (the middle: nothing) */
+		uint32_t b = 0; const float c = 0.38f * d;   /* (22.5 degrees each side of a diagonal: both) */
+		if (dy < -c) b |= UP; if (dy > c) b |= DOWN; if (dx < -c) b |= LEFT; if (dx > c) b |= RIGHT;
+		return b;
+	}
+	if (*k >= VP_TRI && *k <= VP_SQU) {   /* sliding over the face buttons: the nearest one within reach */
+		int best = -1; float bd = 1e9f;
+		for (int i = VP_TRI; i <= VP_SQU; i++) { const float dx = x - el[i].x, dy = y - el[i].y, d = dx * dx + dy * dy; if (d < bd) { bd = d; best = i; } }
+		if (best >= 0 && bd < 1.9f * el[best].r * 1.9f * el[best].r) *k = best;
+		else return 0;
+	}
+	return vp_bit[*k];
+}
+static void vp_update(void) { uint32_t b = 0; for (int i = 0; i < ST_FINGERS; i++) if (vp_down[i]) b |= vp_fbits[i]; vpad_buttons = b; }
+static void vp_release(void) { for (int i = 0; i < ST_FINGERS; i++) vp_down[i] = 0; vpad_buttons = 0; }
+/* a finger for the touch controller: 1 when it took it */
+static int vp_finger(const SDL_Event *e, float mx, float my) {
+	int k = -1;
+	for (int i = 0; i < ST_FINGERS; i++) if (vp_down[i] && vp_id[i] == e->tfinger.fingerID) k = i;
+	if (e->type == SDL_EVENT_FINGER_UP || e->type == SDL_EVENT_FINGER_CANCELED) {
+		if (k < 0) return 0;
+		if (vp_el[k] == VP_MENU && e->type == SDL_EVENT_FINGER_UP) overlay_toggle();
+		vp_down[k] = 0; vp_update(); return 1;
+	}
+	if (!vp_on()) { if (k >= 0) { vp_down[k] = 0; vp_update(); } return 0; }
+	VpadShape el[VP_N]; vp_layout(el);
+	if (k < 0) {
+		if (e->type != SDL_EVENT_FINGER_DOWN) return 0;
+		int hit = -1;
+		for (int i = 0; i < VP_N && hit < 0; i++) {
+			const float dx = mx - el[i].x, dy = my - el[i].y, reach = (i == VP_DPAD ? 1.25f : i >= VP_TRI && i <= VP_SQU ? 1.35f : 1.4f) * el[i].r;
+			if (dx * dx + dy * dy < reach * reach) hit = i;
+		}
+		if (hit < 0) return 0;
+		for (int i = 0; i < ST_FINGERS && k < 0; i++) if (!vp_down[i]) k = i;
+		if (k < 0) return 1;
+		vp_id[k] = e->tfinger.fingerID; vp_el[k] = hit; vp_down[k] = 1;
+	}
+	vp_fbits[k] = vp_hit(el, &vp_el[k], mx, my);
+	vp_update();
+	return 1;
+}
+/* overlay.cpp: what to draw (none while hidden), each element with whether a finger holds it, and the d-pad's held ways */
+int window_vpad_shapes(VpadShape *out, int max, uint32_t *dpad) {
+	*dpad = 0;
+	if (!win || !vp_on() || max < VP_N) return 0;
+	vp_layout(out);
+	const uint32_t b = vpad_buttons;
+	for (int i = 0; i < VP_N; i++) out[i].pressed = vp_bit[i] && (b & vp_bit[i]) != 0;
+	for (int i = 0; i < ST_FINGERS; i++) if (vp_down[i] && vp_el[i] == VP_MENU) out[VP_MENU].pressed = 1;
+	*dpad = (b & UP ? 1 : 0) | (b & RIGHT ? 2 : 0) | (b & DOWN ? 4 : 0) | (b & LEFT ? 8 : 0);
+	out[VP_DPAD].pressed = *dpad != 0;
+	return VP_N;
+}
 static void screen_finger(const SDL_Event *e) {
+	{	int w = 0, h = 0; SDL_GetWindowSize(win, &w, &h);
+		if (vp_finger(e, e->tfinger.x * (float)w, e->tfinger.y * (float)h)) return; }
 	if (!touch_any() && e->tfinger.touchID != SCRIPT_TOUCH_ID && SDL_GetTouchDeviceType(e->tfinger.touchID) != SDL_TOUCH_DEVICE_DIRECT) return;
 	int w = 0, h = 0; SDL_GetWindowSize(win, &w, &h);
 	const float mx = e->tfinger.x * (float)w, my = e->tfinger.y * (float)h;   /* (SDL's finger positions: 0-1 across the window) */
@@ -785,7 +931,7 @@ void window_present(uint32_t base, uint32_t w, uint32_t h, uint32_t pitch) {
 }
 
 void window_input(uint32_t *b, uint8_t s[4]) {
-	*b = buttons & ~(L3 | R3 | PAD_L2 | PAD_R2);
+	*b = (buttons | vpad_buttons) & ~(L3 | R3 | PAD_L2 | PAD_R2);
 	for (int i = 0; i < 4; i++) s[i] = sticks[i];
 	/* the sticks are the touch cursor while a bumper is held -- unless the touchpad is doing the touching
 	 * (RB held only to put its fingers on the rear panel: the sticks stay the game's) */
@@ -802,6 +948,10 @@ void window_input_pad2(uint32_t *b, uint8_t s[4]) {
 	*b = (*b & ~(LTRIG | RTRIG)) | (v & LTRIG ? L1 : 0) | (v & RTRIG ? R1 : 0) | (v & PAD_L2 ? LTRIG : 0) | (v & PAD_R2 ? RTRIG : 0) | (v & (L3 | R3));
 }
 
+/* RECOMP_PAD_TOUCHPAD=0 (a pack's RUN_ENV): a DualShock 4's / DualSense's touchpad doesn't touch the Vita's screen -- for games
+ * played on the buttons alone (the Persona Dancing games), where a stray brush of the pad was a stray touch; its click then
+ * opens the menu, like the Guide button */
+int window_pad_touchpad(void) { static int v = -1; if (v < 0) { const char *e = getenv("RECOMP_PAD_TOUCHPAD"); v = !(e && *e == '0'); } return v; }
 static uint32_t pad_bit(int b) {
 	switch (b) {
 	case SDL_GAMEPAD_BUTTON_SOUTH: return CROSS; case SDL_GAMEPAD_BUTTON_EAST: return CIRCLE;
@@ -893,7 +1043,12 @@ void window_run(void *(*fn)(void *), void *arg) {
 	}
 	int scale = getenv("RECOMP_SCALE") ? atoi(getenv("RECOMP_SCALE")) : 1;
 	if (scale < 1) scale = 1;
-	{ const char *name = getenv("RECOMP_GAME_NAME"); win = SDL_CreateWindow(name && *name ? name : "Project Nativ", 960 * scale, 544 * scale, SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY); }
+	{ const char *name = getenv("RECOMP_GAME_NAME"); int ww0 = 960 * scale, wh0 = 544 * scale; { const float sh = picture_shape(); if (sh < 1.74f || sh > 1.79f) ww0 = (int)(wh0 * sh + 0.5f); }   /* (a narrower or wider aspect setting: the window opens in its shape) */
+#ifdef RECOMP_MOBILE
+	  win = SDL_CreateWindow(name && *name ? name : "Encore", ww0, wh0, SDL_WINDOW_FULLSCREEN | SDL_WINDOW_HIGH_PIXEL_DENSITY); }   /* (a phone's: the whole screen, always) */
+#else
+	  win = SDL_CreateWindow(name && *name ? name : "Encore", ww0, wh0, SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY); }
+#endif
 	{	/* the app icon (assets/brand): the install's, as vitarecomp run names it (an AppImage's moves on every start), else
 		 * the one the build saw */
 		const char *ip = getenv("RECOMP_ICON");
@@ -911,13 +1066,11 @@ void window_run(void *(*fn)(void *), void *arg) {
 		 * refresh too. Killzone's CPU reads of its exposure target waited ~6 ms each: 40 fps windowed against 66 headless
 		 * (RTX laptop, 2026-10-26), 47 with mailbox. Mailbox doesn't block, so this loop paces itself (self_paced, below).
 		 * Metal blocks the CPU in nextDrawable instead, not the queue: vsync there. RECOMP_PRESENT_MODE=fifo|mailbox|immediate */
-		const char *pe = getenv("RECOMP_PRESENT_MODE"), *dv = SDL_GetGPUDeviceDriver(gpu);
+		const char *pe = getenv("RECOMP_PRESENT_MODE");
 		/* (with mailbox, Killzone at 3x and 21:9 lost the device in about half its runs: the FRAGCOLOR copy, a blit since,
 		 * gfx_gpu.c fetch_blit) */
-		SDL_GPUPresentMode pm = pe ? (!strcmp(pe, "immediate") ? SDL_GPU_PRESENTMODE_IMMEDIATE : !strcmp(pe, "mailbox") ? SDL_GPU_PRESENTMODE_MAILBOX : SDL_GPU_PRESENTMODE_VSYNC)
-		                           : dv && !strcmp(dv, "vulkan") ? SDL_GPU_PRESENTMODE_MAILBOX : SDL_GPU_PRESENTMODE_VSYNC;
-		if (pm != SDL_GPU_PRESENTMODE_VSYNC && SDL_WindowSupportsGPUPresentMode(gpu, win, pm) && SDL_SetGPUSwapchainParameters(gpu, win, SDL_GPU_SWAPCHAINCOMPOSITION_SDR, pm)) self_paced = 1;
-		fprintf(stderr, "    window: present mode %s\n", !self_paced ? "vsync" : pm == SDL_GPU_PRESENTMODE_MAILBOX ? "mailbox" : "immediate");
+		if (pe) present_mode_apply(!strcmp(pe, "immediate") ? SDL_GPU_PRESENTMODE_IMMEDIATE : !strcmp(pe, "mailbox") ? SDL_GPU_PRESENTMODE_MAILBOX : SDL_GPU_PRESENTMODE_VSYNC);
+		else present_mode_apply(window_get_vsync() ? SDL_GPU_PRESENTMODE_VSYNC : SDL_GPU_PRESENTMODE_MAILBOX);
 	}
 	/* frames the swapchain may have queued for presentation (SDL's default 2): each one is a refresh
 	 * between a game's flip and the screen. 1 here -- with the frame picked after the drawable wait
@@ -964,9 +1117,13 @@ void window_run(void *(*fn)(void *), void *arg) {
 			/* the overlay itself: always live, open or not, so it can always be reached and always
 			 * closed. Opening (or re-opening by the same gamepad combo) clears whatever buttons/touch
 			 * were down so the game never sees them as still held on resume. */
+			/* the frame rate, 30 / 60 / 90 / 120 in turn: F3, or a Steam Deck's R5 (SDL's right paddle 2, which a game sees when
+			 * it reads the Deck itself; under Steam Input, map R5 to F3 in the game's controller layout) */
+			if ((e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat && e.key.key == SDLK_F3) ||
+			    (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN && e.gbutton.button == SDL_GAMEPAD_BUTTON_RIGHT_PADDLE2)) overlay_cycle_frame_rate();
 			if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat && e.key.key == SDLK_F10) { overlay_toggle(); if (overlay_is_open()) { buttons = 0; touch_down = 0; gamepad_touch_release(); } }
 			if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat && e.key.key == SDLK_ESCAPE) { if (overlay_is_open()) overlay_close(); else overlay_bar_dismiss(); }   /* (closed: Escape hides the menu bar and its menus) */
-			if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN && e.gbutton.button == SDL_GAMEPAD_BUTTON_GUIDE) { overlay_toggle(); if (overlay_is_open()) { buttons = 0; touch_down = 0; gamepad_touch_release(); } }
+			if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN && (e.gbutton.button == SDL_GAMEPAD_BUTTON_GUIDE || (e.gbutton.button == SDL_GAMEPAD_BUTTON_TOUCHPAD && !window_pad_touchpad()))) { overlay_toggle(); if (overlay_is_open()) { buttons = 0; touch_down = 0; gamepad_touch_release(); } }
 			if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN && e.gbutton.button == SDL_GAMEPAD_BUTTON_BACK) pad_back = 1;
 			if (e.type == SDL_EVENT_GAMEPAD_BUTTON_UP && e.gbutton.button == SDL_GAMEPAD_BUTTON_BACK) { pad_back = 0; pad_combo_latch = 0; }
 			if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN && e.gbutton.button == SDL_GAMEPAD_BUTTON_START) pad_start = 1;
@@ -986,6 +1143,10 @@ void window_run(void *(*fn)(void *), void *arg) {
 			 * outside it: its MouseDownOwned). Keys and the pad stay the game's -- the bar is pointer-only. */
 			if (e.type == SDL_EVENT_MOUSE_MOTION || e.type == SDL_EVENT_MOUSE_BUTTON_DOWN || e.type == SDL_EVENT_MOUSE_BUTTON_UP || e.type == SDL_EVENT_MOUSE_WHEEL ||
 			    e.type == SDL_EVENT_WINDOW_MOUSE_ENTER || e.type == SDL_EVENT_WINDOW_MOUSE_LEAVE || e.type == SDL_EVENT_WINDOW_FOCUS_GAINED || e.type == SDL_EVENT_WINDOW_FOCUS_LOST) {
+				/* (with the touch controller up, a finger is the controller's or the Vita screen's: not the menu bar's -- its
+				 * menu button opens the menu, where touches are the menu's again) */
+				const int touch_mouse = (e.type == SDL_EVENT_MOUSE_MOTION && e.motion.which == SDL_TOUCH_MOUSEID) || ((e.type == SDL_EVENT_MOUSE_BUTTON_DOWN || e.type == SDL_EVENT_MOUSE_BUTTON_UP) && e.button.which == SDL_TOUCH_MOUSEID);
+				if (touch_mouse && vp_on()) continue;
 				overlay_process_event(&e);
 				if (overlay_mouse_captured() && e.type != SDL_EVENT_MOUSE_BUTTON_UP) continue;
 			}
@@ -1056,7 +1217,7 @@ void window_run(void *(*fn)(void *), void *arg) {
 				else if (was && e.gaxis.value < 8000) ptrig[k] = 0;
 				if (ptrig[k] != was) { if (shoulders_swapped) pad_second(pad, k, ptrig[k]); else pad_main(pad, k, ptrig[k]); }
 			}
-			if (e.type == SDL_EVENT_GAMEPAD_TOUCHPAD_DOWN || e.type == SDL_EVENT_GAMEPAD_TOUCHPAD_MOTION || e.type == SDL_EVENT_GAMEPAD_TOUCHPAD_UP) {
+			if (window_pad_touchpad() && (e.type == SDL_EVENT_GAMEPAD_TOUCHPAD_DOWN || e.type == SDL_EVENT_GAMEPAD_TOUCHPAD_MOTION || e.type == SDL_EVENT_GAMEPAD_TOUCHPAD_UP)) {
 				int f = e.gtouchpad.finger;
 				if (e.gtouchpad.touchpad == 0 && f >= 0 && f < TP_FINGERS) {
 					if (e.type == SDL_EVENT_GAMEPAD_TOUCHPAD_UP) tp_down[f] = 0;
@@ -1072,7 +1233,7 @@ void window_run(void *(*fn)(void *), void *arg) {
 			/* the mouse moved for real over the picture while the pad had the input (auto mode): back to keyboard +
 			 * mouse, so the capture returns at once -- it used to wait for a key, the pointer loose and stopping at
 			 * the window's edges after any touch of the pad (Alt still frees it; a nudge under a few points doesn't count) */
-			if (!rel_on && e.type == SDL_EVENT_MOUSE_MOTION && !overlay_mouse_captured() && settings_int("mouse_look", 1) &&
+			if (!rel_on && e.type == SDL_EVENT_MOUSE_MOTION && !overlay_mouse_captured() && mouse_look_on() &&
 			    fabsf(e.motion.xrel) + fabsf(e.motion.yrel) > 3.0f && !(SDL_GetModState() & SDL_KMOD_ALT)) { kbm_auto = 1; snprintf(kbm_why, sizeof kbm_why, "the mouse, not captured"); }
 			if (rel_on && (e.type == SDL_EVENT_MOUSE_MOTION || e.type == SDL_EVENT_MOUSE_BUTTON_DOWN || e.type == SDL_EVENT_MOUSE_BUTTON_UP)) {   /* captured: the look, and R / L */
 				if (e.type == SDL_EVENT_MOUSE_MOTION && now_us() - rel_since_us < 60000) continue;
@@ -1133,9 +1294,9 @@ void window_run(void *(*fn)(void *), void *arg) {
 			if (on && pstv) { kbm_used(); on = 0; }
 			static int said;
 			if (on != kbm_on) { extern uint64_t display_frames(void); fprintf(stderr, "    input: %s (%s%s, frame %llu)\n", on ? "keyboard and mouse" : "the controller", strcmp(mode, "auto") ? "Play with: " : "", strcmp(mode, "auto") ? mode : kbm_why[0] ? kbm_why : "start", (unsigned long long)display_frames()); }
-			if (on && !kbm_on && !said) { said = 1; overlay_toast_titled("Keyboard & mouse", "The mouse looks and aims -- hold [Alt] for the cursor\nControls: [F10]", 6.0); }
+			if (on && !kbm_on && !said) { said = 1; overlay_toast_titled("Keyboard & mouse", mouse_look_on() ? "The mouse looks and aims -- hold [Alt] for the cursor\nControls: [F10]" : "Controls: [F10]", 6.0); }
 			kbm_on = on;
-			int want = (on || (window_raw_look() && !pstv)) && settings_int("mouse_look", 1) && !overlay_is_open() && !overlay_dialog_active() && win && (SDL_GetWindowFlags(win) & SDL_WINDOW_INPUT_FOCUS) && !(SDL_GetModState() & SDL_KMOD_ALT);
+			int want = (on || (window_raw_look() && !pstv)) && mouse_look_on() && !overlay_is_open() && !overlay_dialog_active() && win && (SDL_GetWindowFlags(win) & SDL_WINDOW_INPUT_FOCUS) && !(SDL_GetModState() & SDL_KMOD_ALT);
 			/* SDL's own state, not just ours: the system can drop the capture behind our back (a focus change as
 			 * the window opens, say) and rel_on then claimed a capture that wasn't there -- the pointer showed,
 			 * left the window and stopped tracking at its edge. Re-applied whenever the two disagree. */
@@ -1335,13 +1496,24 @@ void window_run(void *(*fn)(void *), void *arg) {
 
 
 		if (!gpu) { SDL_Delay(1); continue; }
+		{ const int v = vsync_pending; if (v >= 0) { vsync_pending = -1; present_mode_apply(v ? SDL_GPU_PRESENTMODE_VSYNC : SDL_GPU_PRESENTMODE_MAILBOX); } }   /* the menu's V-sync */
 		if (overlay_game_paused()) { extern void gfx_shader_prep_tick(void); gfx_shader_prep_tick(); }   /* (a paused game doesn't present: the shader warm-up steps on from here, its prep card's too) */
-		if (self_paced) {   /* no vsync wait paces this loop: a present once the game has a new frame, else once a refresh (menus, the overlay); spinning presented ~1200 times a second and slowed the game */
+		/* Present when there is something new to show: a game frame, or the menu, the save dialog, a paused game or the
+		 * startup screens (they animate on their own: every refresh). Otherwise -- the game between its frames -- this loop
+		 * doesn't present, so the display's compositor sees the game's own rate: a game at 60 on a 90 Hz Steam Deck OLED
+		 * presented every refresh and gamescope (and macOS's frame-rate HUD) counted 90 frames a second, the same picture
+		 * shown again. With nothing new for 33 ms it presents anyway (toasts fading, a game stalled in a load). */
+		{ static int seen_game_frame; static uint64_t last_present_us;
+		  const int fresh = __atomic_load_n(&gnew, __ATOMIC_ACQUIRE) || __atomic_load_n(&new_frame, __ATOMIC_ACQUIRE);
+		  if (fresh) seen_game_frame = 1;
+		  const int every_refresh = !seen_game_frame || overlay_is_open() || overlay_dialog_active() || overlay_game_paused();
+		  if (self_paced) {   /* no vsync wait paces this loop: spinning presented ~1200 times a second and slowed the game */
 			const SDL_DisplayMode *dm = SDL_GetCurrentDisplayMode(SDL_GetDisplayForWindow(win));
-			const uint64_t period = (uint64_t)(1e6 / (dm && dm->refresh_rate > 1 ? dm->refresh_rate : 60.0f));
+			const uint64_t period = every_refresh ? (uint64_t)(1e6 / (dm && dm->refresh_rate > 1 ? dm->refresh_rate : 60.0f)) : 33333;
 			while (!__atomic_load_n(&gnew, __ATOMIC_ACQUIRE) && !__atomic_load_n(&new_frame, __ATOMIC_ACQUIRE) && now_us() - last_paced_us < period) SDL_DelayPrecise(250000);
 			last_paced_us = now_us();
-		}
+		  } else if (!fresh && !every_refresh && now_us() - last_present_us < 33333) { SDL_DelayPrecise(1000000); continue; }   /* (back to the events: input stays live) */
+		  last_present_us = now_us(); }
 		uint64_t t_blit0 = now_us();
 		SDL_GPUCommandBuffer *cmd = SDL_AcquireGPUCommandBuffer(gpu);
 		if (!cmd) continue;
@@ -1450,9 +1622,31 @@ void window_run(void *(*fn)(void *), void *arg) {
 			if (rear_in_play) { float x0, y0, x1, y1; touch_to_point(0, REAR_Y0, &x0, &y0); touch_to_point(1920, REAR_Y1 + 1, &x1, &y1); rear[0] = x0; rear[1] = y0; rear[2] = x1 - x0; rear[3] = y1 - y0; }
 			overlay_marks(cmd, swap, ww, wh, dt, mk, nm, rear);
 		}
+		else if (got_swap && swap) {
+			/* no frame from the game yet (startup, before its first present): the swapchain texture still has to be
+			 * written -- submitted untouched, Metal shows whatever the drawable held, a magenta flash at launch */
+			SDL_GPUColorTargetInfo ct = { .texture = swap, .load_op = SDL_GPU_LOADOP_CLEAR, .clear_color = { 0, 0, 0, 1 }, .store_op = SDL_GPU_STOREOP_STORE };
+			SDL_GPURenderPass *rp = SDL_BeginGPURenderPass(cmd, &ct, 1, 0); if (rp) SDL_EndGPURenderPass(rp);
+		}
 		frame_fence[frame_fi] = SDL_SubmitGPUCommandBufferAndAcquireFence(cmd); frame_fi = (frame_fi + 1) % 3;   /* vsync via the swapchain paces this loop; the fence is for the poll above, frames_in_flight on */
 		if (wlock) gfx_lock_leave();
 		uint64_t t_blit3 = now_us();
+		{	/* RECOMP_PRESENT_TRACE=1: the window's own presents, a line a second -- the intervals between them in buckets (a flat 16.7 at
+			 * 60 fps is what the display should get) and how long a new game frame waited for this loop */
+			static int wt = -1; if (wt < 0) wt = getenv("RECOMP_PRESENT_TRACE") != 0;
+			if (wt) {
+				static uint64_t prev, t0; static unsigned b[6], n; static uint64_t wait_sum, wait_max;
+				if (prev) { const uint64_t d = t_blit3 - prev; b[d < 10000 ? 0 : d < 14000 ? 1 : d < 19000 ? 2 : d < 23000 ? 3 : d < 30000 ? 4 : 5]++; }
+				prev = t_blit3; n++;
+				if (gshow >= 0 && gready_us[gshow] && t_blit3 > gready_us[gshow]) { const uint64_t w = t_blit3 - gready_us[gshow]; wait_sum += w; if (w > wait_max) wait_max = w; }
+				if (!t0) t0 = t_blit3;
+				if (t_blit3 - t0 >= 1000000) {
+					fprintf(stderr, "    window presents: %u; intervals <10 %u, 10-14 %u, 14-19 %u, 19-23 %u, 23-30 %u, >30 %u ms; frame ready -> submitted %.1f ms avg, %.1f max\n",
+					        n, b[0], b[1], b[2], b[3], b[4], b[5], n ? wait_sum / 1e3 / n : 0, wait_max / 1e3);
+					memset(b, 0, sizeof b); n = 0; wait_sum = wait_max = 0; t0 = t_blit3;
+				}
+			}
+		}
 		{	/* each newly shown GPU frame: the flip -> submit time, plus the compositor and scan-out estimate,
 			 * into the automatic A/V sync's picture term (av_video_ms); RECOMP_LATENCY_LOG=1 prints the
 			 * terms once a second */

@@ -17,3 +17,5 @@ void mtl_archive_flush(int how);
 void mtl_archive_flush_soon(int warm);   /* the same, on the archive's own thread (warm: 1's) */
 /* pipelines from the archive, compiled and added, libraries kept since the start: to stderr */
 void mtl_archive_report(void);
+/* this thread's last pipeline: 1 it came from the archive, 0 compiled (gfx_gpu.c's hitch line) */
+int mtl_archive_last_hit(void);

@@ -38,19 +38,28 @@
 
 #define MAXSEG 48
 static pthread_mutex_t seg_m = PTHREAD_MUTEX_INITIALIZER, cur_m = PTHREAD_MUTEX_INITIALIZER;
+/* every serializeToURL, one at a time: Metal's serializer isn't safe against another archive's serializing at once -- two
+ * workers writing one file crashed in it, and a warm-up segment written while workers kept libraries (keep_library's
+ * one-pipeline archives) came out "invalid format", deleted at the next start: its 41 pipelines compiled again every
+ * session, and the hitches in play with them (2026-11-23) */
+static pthread_mutex_t ser_m = PTHREAD_MUTEX_INITIALIZER;
 static id<MTLDevice> dev;
 static NSArray *segs;                 /* the segments, for lookups (replaced whole, under seg_m) */
 static int nfound;                    /* compacting: the first nfound of segs are the ones this start found */
 static char (*found_paths)[1100];
 static id<MTLBinaryArchive> cur;      /* added since the last flush (under cur_m) */
 static int cur_n, seg_next, compact, on;
+static NSMutableArray *cur_pds;     /* copies of cur's descriptors (under cur_m): a segment that won't read back is checked one by one */
 static uint64_t dirty_ms;             /* when cur's first pipeline was added (0: none) */
+static uint64_t last_add_ms;          /* when cur's latest pipeline was added: a quiet minute after it, a flush */
 static char dir[1024];
 static IMP orig;
 static MtlAirStore air_store;
 static uint32_t n_hit, n_added, n_libs; static uint64_t us_add, us_keep;   /* (us: the workers' time in add and keep_library) */
 typedef struct { int set, archive; uint64_t vkey, fkey; } Want;   /* set 0: no word from the caller -- archived (the renderer's own pipelines) */
 static __thread Want want;
+static __thread int last_hit;
+int mtl_archive_last_hit(void) { return last_hit; }
 
 static uint64_t now_us(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return (uint64_t)t.tv_sec * 1000000 + (uint64_t)t.tv_nsec / 1000; }
 static uint64_t now_ms(void) { return now_us() / 1000; }
@@ -66,6 +75,7 @@ static id<MTLBinaryArchive> archive_new(NSURL *url) {   /* (retained) */
 	MTLBinaryArchiveDescriptor *ad = [MTLBinaryArchiveDescriptor new]; ad.url = url;
 	NSError *e = nil; id<MTLBinaryArchive> a = [dev newBinaryArchiveWithDescriptor:ad error:&e];
 	[ad release];
+	if (!a && url) fprintf(stderr, "    gpu: shader archive: %s won't open (%s)\n", url.path.UTF8String, e ? e.localizedDescription.UTF8String : "?");
 	return a;
 }
 static void add(MTLRenderPipelineDescriptor *pd) {   /* a pipeline joins this session's segment */
@@ -73,7 +83,7 @@ static void add(MTLRenderPipelineDescriptor *pd) {   /* a pipeline joins this se
 	pthread_mutex_lock(&cur_m);
 	if (!cur) cur = archive_new(nil);
 	NSError *e = nil;
-	if (cur && [cur addRenderPipelineFunctionsWithDescriptor:pd error:&e]) { cur_n++; if (!dirty_ms) dirty_ms = now_ms(); __atomic_add_fetch(&n_added, 1, __ATOMIC_RELAXED); }
+	if (cur && [cur addRenderPipelineFunctionsWithDescriptor:pd error:&e]) { if (!cur_pds) cur_pds = [NSMutableArray new]; { MTLRenderPipelineDescriptor *c = [pd copy]; [cur_pds addObject:c]; [c release]; } cur_n++; if (!dirty_ms) dirty_ms = now_ms(); last_add_ms = now_ms(); __atomic_add_fetch(&n_added, 1, __ATOMIC_RELAXED); }
 	else { static int said; if (!said++) fprintf(stderr, "    gpu: shader archive: a pipeline wasn't added (%s)\n", e ? e.localizedDescription.UTF8String : "no archive"); }
 	pthread_mutex_unlock(&cur_m);
 	__atomic_add_fetch(&us_add, now_us() - t0, __ATOMIC_RELAXED);
@@ -131,7 +141,10 @@ static void keep_library(MTLRenderPipelineDescriptor *pd, int frag, uint64_t key
 	id<MTLBinaryArchive> a = archive_new(nil);
 	char tmp[1100]; snprintf(tmp, sizeof tmp, "%s/lib.%d.%u.tmp", dir, (int)getpid(), __atomic_add_fetch(&seq, 1, __ATOMIC_RELAXED));
 	NSError *e = nil; NSData *b = nil;
-	if (a && [a addRenderPipelineFunctionsWithDescriptor:one error:&e] && [a serializeToURL:[NSURL fileURLWithPath:@(tmp)] error:&e]) b = [NSData dataWithContentsOfFile:@(tmp)];
+	if (a && [a addRenderPipelineFunctionsWithDescriptor:one error:&e]) {
+		pthread_mutex_lock(&ser_m); const BOOL ok = [a serializeToURL:[NSURL fileURLWithPath:@(tmp)] error:&e]; pthread_mutex_unlock(&ser_m);
+		if (ok) b = [NSData dataWithContentsOfFile:@(tmp)];
+	}
 	unlink(tmp);
 	[a release]; [one release];
 	NSData *lib = b ? library_slice(b) : nil; char entry[64];
@@ -143,6 +156,7 @@ typedef id (*NewPipe)(id, SEL, MTLRenderPipelineDescriptor *, NSError **);
 static id new_pipe(id self, SEL sel, MTLRenderPipelineDescriptor *pd, NSError **err) {   /* (swizzled in for SDL's pipelines: the archive first) */
 	const Want w = want; want = (Want){ 0, 0, 0, 0 };
 	const int archive = w.set ? w.archive : 1;
+	last_hit = 0;
 	if (!on || self != dev || pd.binaryArchives.count) return ((NewPipe)orig)(self, sel, pd, err);   /* (another device's: its archives would have to be its own) */
 	id ps = nil;
 	@autoreleasepool {
@@ -152,11 +166,15 @@ static id new_pipe(id self, SEL sel, MTLRenderPipelineDescriptor *pd, NSError **
 			ps = [self newRenderPipelineStateWithDescriptor:pd options:MTLPipelineOptionFailOnBinaryArchiveMiss reflection:nil error:nil];
 			pd.binaryArchives = nil;
 		}
-		const int hit = ps != nil;
+		const int hit = ps != nil; last_hit = hit;
 		if (hit) __atomic_add_fetch(&n_hit, 1, __ATOMIC_RELAXED);
 		else ps = ((NewPipe)orig)(self, sel, pd, err);
+		/* SDL's own blit pipelines (FullscreenVert + BlitFrom2D/2DArray/3D/Cube, from its built-in library) make an archive Metal
+		 * reads back as "invalid format": one in a segment and the whole segment was deleted at the next start (2026-11-23) */
+		const char *vn = pd.vertexFunction.name.UTF8String;
+		const int sdl_own = vn && !strcmp(vn, "FullscreenVert");
 		if (ps) {
-			if (archive && (!hit || compact)) add(pd);
+			if (archive && !sdl_own && (!hit || compact)) add(pd);
 			if (w.vkey) keep_library(pd, 0, w.vkey);
 			if (w.fkey) keep_library(pd, 1, w.fkey);
 		}
@@ -170,12 +188,35 @@ void mtl_archive_flush(int how) {
 	if (how == 1) warmed = 1;
 	@autoreleasepool {
 		pthread_mutex_lock(&cur_m);
-		id<MTLBinaryArchive> a = cur; const int n = cur_n; cur = nil; cur_n = 0; dirty_ms = 0;
+		id<MTLBinaryArchive> a = cur; const int n = cur_n; NSMutableArray *pds = cur_pds; cur = nil; cur_n = 0; cur_pds = nil; dirty_ms = 0;
 		pthread_mutex_unlock(&cur_m);
 		if (a && n) {
 			static uint32_t seq; char path[1100], tmp[1200]; snprintf(tmp, sizeof tmp, "%s/seg.%d.%u.tmp", dir, (int)getpid(), __atomic_add_fetch(&seq, 1, __ATOMIC_RELAXED));
 			const uint64_t t0 = now_ms(); NSError *e = nil; struct stat st; int placed = 0;
-			if ([a serializeToURL:[NSURL fileURLWithPath:@(tmp)] error:&e])
+			pthread_mutex_lock(&ser_m); BOOL ser = [a serializeToURL:[NSURL fileURLWithPath:@(tmp)] error:&e]; pthread_mutex_unlock(&ser_m);
+			/* read back before it takes a number: a segment Metal won't open is deleted at the next start, its pipelines lost */
+			if (ser) { id<MTLBinaryArchive> chk = archive_new([NSURL fileURLWithPath:@(tmp)]); if (!chk) ser = NO; [chk release]; }
+			if (!ser && pds.count) {   /* which pipelines make it unreadable: each alone through a scratch archive; the rest written again */
+				int bad = 0; id<MTLBinaryArchive> good = archive_new(nil); int ngood = 0;
+				for (MTLRenderPipelineDescriptor *pd in pds) {
+					id<MTLBinaryArchive> one = archive_new(nil); NSError *e1 = nil; char t1[1200]; snprintf(t1, sizeof t1, "%s.one", tmp);
+					BOOL ok = one && [one addRenderPipelineFunctionsWithDescriptor:pd error:&e1];
+					if (ok) { pthread_mutex_lock(&ser_m); ok = [one serializeToURL:[NSURL fileURLWithPath:@(t1)] error:&e1]; pthread_mutex_unlock(&ser_m); }
+					if (ok) { MTLBinaryArchiveDescriptor *ad = [MTLBinaryArchiveDescriptor new]; ad.url = [NSURL fileURLWithPath:@(t1)]; id<MTLBinaryArchive> r = [dev newBinaryArchiveWithDescriptor:ad error:nil]; [ad release]; ok = r != nil; [r release]; }
+					unlink(t1); [one release];
+					if (ok && good && [good addRenderPipelineFunctionsWithDescriptor:pd error:nil]) ngood++;
+					else if (!ok && bad++ < 4) fprintf(stderr, "    gpu: shader archive: left out, won't archive: vertex %s, fragment %s\n", pd.vertexFunction.name.UTF8String ?: "-", pd.fragmentFunction ? pd.fragmentFunction.name.UTF8String : "none");
+				}
+				unlink(tmp);
+				if (good && ngood) {
+					pthread_mutex_lock(&ser_m); ser = [good serializeToURL:[NSURL fileURLWithPath:@(tmp)] error:&e]; pthread_mutex_unlock(&ser_m);
+					if (ser) { id<MTLBinaryArchive> chk = archive_new([NSURL fileURLWithPath:@(tmp)]); if (!chk) ser = NO; [chk release]; }
+					if (ser) { [a release]; a = [good retain]; }
+				}
+				[good release];
+				fprintf(stderr, "    gpu: shader archive: %d of %d pipelines left out (they won't archive)%s\n", bad, (int)pds.count, ser ? ", the rest written" : "");
+			}
+			if (ser)
 				for (int k = 0; k < 64 && !placed; k++) {   /* (the next number no other game process sharing the folder took: never replacing one) */
 					pthread_mutex_lock(&cur_m); const int s = seg_next++; pthread_mutex_unlock(&cur_m);
 					snprintf(path, sizeof path, "%s/seg_%06d.bin", dir, s);
@@ -184,9 +225,10 @@ void mtl_archive_flush(int how) {
 			if (placed && !stat(path, &st)) {
 				pthread_mutex_lock(&seg_m); NSArray *o = segs; segs = [[o arrayByAddingObject:a] retain]; [o release]; pthread_mutex_unlock(&seg_m);
 				fprintf(stderr, "    gpu: shader archive: %d pipelines written (%s, %.1f MB, %llu ms)\n", n, path, st.st_size / 1048576.0, (unsigned long long)(now_ms() - t0));
+				mtl_archive_report();
 			} else { unlink(tmp); fprintf(stderr, "    gpu: shader archive: writing %s failed (%s)\n", tmp, e ? e.localizedDescription.UTF8String : "no segment number free"); }
 		}
-		[a release];
+		[a release]; [pds release];
 		if (how == 2 && warmed && compact && nfound) {   /* this session made every pipeline the recipes name and every other it used: the segments it found go */
 			pthread_mutex_lock(&seg_m);
 			NSArray *o = segs; segs = [[o subarrayWithRange:NSMakeRange(nfound, o.count - nfound)] retain]; [o release];
@@ -236,15 +278,19 @@ static pthread_mutex_t fl_m = PTHREAD_MUTEX_INITIALIZER; static pthread_cond_t f
 void mtl_archive_flush_soon(int warm) {   /* (the render thread: a first session's segment is hundreds of MB) */
 	pthread_mutex_lock(&fl_m); if (fl_req < 1 + !!warm) fl_req = 1 + !!warm; pthread_cond_signal(&fl_c); pthread_mutex_unlock(&fl_m);
 }
-static void *flusher(void *arg) {   /* asked, or ten minutes after a pipeline joined */
+static void *flusher(void *arg) {   /* asked, ten minutes after a pipeline joined, or a quiet minute after the latest */
 	(void)arg;
 	for (;;) {
 		pthread_mutex_lock(&fl_m);
 		if (!fl_req) { struct timespec t; clock_gettime(CLOCK_REALTIME, &t); t.tv_sec += 10; pthread_cond_timedwait(&fl_c, &fl_m, &t); }
 		const int r = fl_req; fl_req = 0;
 		pthread_mutex_unlock(&fl_m);
-		pthread_mutex_lock(&cur_m); const uint64_t d = dirty_ms; pthread_mutex_unlock(&cur_m);
-		if (r || (d && now_ms() - d > 600000)) mtl_archive_flush(r == 2);
+		pthread_mutex_lock(&cur_m); const uint64_t d = dirty_ms, l = last_add_ms; pthread_mutex_unlock(&cur_m);
+		/* ten minutes after the first new pipeline, or a quiet minute after the latest (a scene's burst is over): a session that
+		 * never exits cleanly -- killed, crashed, force-quit -- kept nothing before, and every start compiled the same pipelines
+		 * again in play (73 in one P3D run, 0.9 s of hitches, 2026-11-23). A segment a flush: a start that finds too many compacts
+		 * them (above) */
+		if (r || (d && now_ms() - d > 600000) || (d && l && now_ms() - l > 60000)) mtl_archive_flush(r == 2);
 	}
 	return 0;
 }

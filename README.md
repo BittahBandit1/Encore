@@ -1,189 +1,121 @@
-# PersonaDancingRecomp
+# Encore
 
-The Persona Dancing games for PS Vita, running natively on PC. This is a fork of
-[Project Nativ](https://github.com/TheLostPantheon/nativ), which does the recompiling; this fork adds the packs and
-the renderer fixes these games need. Everything below the line is Project Nativ's own README.
+**The Persona Dancing games for PS Vita, rebuilt to run natively on your Mac, PC or Steam Deck.**
+
+Encore takes your own copy of a Persona Dancing game, recompiles it into a native program on your computer, and runs
+it at higher resolutions and frame rates than the Vita ever could. No emulator, and nothing of the game is included:
+you bring the games you own.
 
 | Game | Title ID | Status |
 |---|---|---|
-| Persona 4: Dancing All Night (US) | PCSE00764 | Playable: v0.9 |
+| Persona 4: Dancing All Night (US) | PCSE00764 | Playable |
 | Persona 3: Dancing in Moonlight (US) | PCSE01274 | Playable, in testing |
 | Persona 5: Dancing in Starlight (US) | PCSE01275 | Playable, in testing |
 
-**Persona 4: Dancing All Night** is playable: the opening movie, menus and Free Dance, music in sync, the DLC songs and
-costumes, at 4x the Vita's resolution (up to 6x) and 30 or 60 fps. Story mode hasn't had a full playthrough yet:
-reports welcome.
+Only the US releases play so far. Other regions and versions are recognised, and the launcher tells you which release
+it supports.
 
-- **Sharper than the Vita:** the close-up blur (the Vita draws those shots at quarter resolution and stretches them back)
-  is turned off by default.
-- **Texture packs:** packs made for Vita3K work unchanged (none are included).
-- **DLC:** the add-ons you own, decrypted from your own dump.
+## What you get
 
-### What you need
+- **Sharper than the Vita:** render at up to 6x the Vita's resolution (F2 cycles it in game).
+- **60 fps:** the dances keep time with the music. Persona 3 and 5 also run their menus at 60.
+- **Your DLC:** the songs and costumes you own, decrypted from your own dump.
+- **Texture packs:** packs made for Vita3K work unchanged, such as the PS4 texture pack for Persona 3.
+- **No close-up blur** in Persona 4: the Vita draws those shots at quarter resolution and stretches them back. Encore
+  keeps them sharp (you can turn the blur back on).
+- **Controller, keyboard or touch screen**, with your saves kept in one library folder.
 
-Your own dumps, made from a Vita you own: the game, its update and any DLC (ux0:app, ux0:patch and ux0:addcont), and
-Sony's firmware update file. **No game code, game data or firmware is in this repository, and none ever will be.**
-Please don't open issues asking for them.
+## What you need
 
-Setup for P4D, its options and notes are in [packs/PCSE00764/README.md](packs/PCSE00764/README.md).
+- **A computer:** a Mac with Apple silicon (macOS 11 or newer), a Windows 10 or 11 PC, or a Linux PC, including the
+  Steam Deck.
+- **Your own copies of the games**, dumped from a Vita you own: the game, its update if it has one, and any DLC
+  (`ux0:app`, `ux0:patch` and `ux0:addcont`).
+- **Sony's PS Vita system software update file** (`PSVUPDAT.PUP`), free from Sony's website. Encore rebuilds the Vita's
+  system libraries from it on your machine. If you've set up Vita3K, you've already downloaded this file once.
 
-**Persona 3: Dancing in Moonlight** boots, plays its songs and DLC, and runs at the right speed at 60 fps in songs and
-menus (it's Atlus's own engine, as in Persona 5, where P4D's was Dingo's). Its pack is `packs/PCSE01274`; Vita3K texture
-packs work, such as the PS4 texture pack for P3D.
+**No game code, game data or firmware is in this repository, and none ever will be.** Please don't open issues asking
+for them.
 
-**Persona 5: Dancing in Starlight** is built from the same code as P3D and plays the same way, 60 fps included. Its pack
-is `packs/PCSE01275`.
+## Playing
 
-### Credits
+There's no Encore release to download yet. Until there is, build it from source (below).
 
-[Project Nativ](https://github.com/TheLostPantheon/nativ) by TheLostPantheon and its contributors: the recompiler,
-runtime and pipeline this all runs on. Atlus and Dingo made the games: support them by buying them.
+Once it's installed, the launcher walks you through first-run setup: point it at your firmware file and your game
+dumps, and it decrypts and checks them. The first time you play a game, Encore builds it for your computer, which takes
+a few minutes. After that it starts straight away.
 
----
+The [player guide](docs/player-guide.md) covers installing, controls, settings, saves and reporting a bug. Each game's
+own notes and options are in its pack: [Persona 4](packs/PCSE00764/README.md),
+[Persona 3](packs/PCSE01274/README.md) and [Persona 5](packs/PCSE01275/README.md).
 
-<p align="center"><img src="assets/brand/banner.svg" alt="Project Nativ: your PS Vita games, rebuilt natively" width="720"></p>
+## Building from source
 
-# Project Nativ
+Encore builds on macOS, Linux and Windows. From the top of a checkout:
 
-Project Nativ turns PS Vita games into native programs for macOS, Linux and Windows. You bring your own copy of a
-game. The tools recompile it on your machine, and it runs like any other program, with extras the Vita never had:
-higher resolutions, wider screens, 60 fps and mouse aiming, depending on the game.
-
-## How it works
-
-A Vita game is ARM code written against Sony's system software. Nativ handles the two separately.
-
-- **The game's code is recompiled.** A static recompiler translates the game's ARMv7 code, Thumb-2, VFP and NEON
-  included, into C once, ahead of time. That C is compiled into a native program.
-- **The system underneath is rebuilt.** Sony's own libraries that a game loads, such as libgxm, libc and FIOS, are
-  recompiled with it from your firmware. Below them, a runtime stands in for the Vita's kernel and hardware: it runs
-  the game's threads, draws its graphics on your GPU and plays its sound.
-
-[How it works](docs/architecture.md) goes into the design.
-
-## Nothing of the game ships
-
-This repository holds no game code, game data or firmware, and nothing we distribute ever will. You supply your own
-copy of each game and Sony's firmware update file, and the tools decrypt and recompile them on your machine.
-
-## Supported games
-
-| Game | Release | Title ID | Versions |
-|---|---|---|---|
-| Killzone: Mercenary | US | PCSA00107 | 1.00, 1.12 (recommended: Botzone and online play) |
-| Uncharted: Golden Abyss | US | PCSA00029 | 1.00 |
-| Unit 13 | US | PCSA00014 | 1.00 |
-| Shovel Knight | US | PCSE00640 | 1.00 |
-| Persona 4: Dancing All Night | US | PCSE00764 | 1.00, 1.01 |
-
-Each game's pack supports exact releases, recognised by the SHA-256 of the game's main program. Game-specific fixes,
-such as Killzone's physics fix or the widescreen cameras, patch code at fixed addresses, so they only fit the build
-they were written for. Your game data doesn't need to match; the main program does.
-
-Not supported yet: other regions (EU, JP, Asia) and the later updates of Uncharted (1.03), Unit 13 (1.01) and Shovel
-Knight (1.08, Treasure Trove). The launcher recognises them and tells you which release it supports. It keeps an
-unsupported update, and the game runs without it. Porting a new release starts with `dev/hookmap.py`, which carried
-43 of Killzone 1.12's 46 hooks over from 1.00 by matching code.
-
-## Getting started
-
-**Players** use the launcher. It walks you through first-run setup, then builds and starts your games. Build it with
-`launcher/build.sh`; the result is `launcher/nativ`.
-
-**Developers** can run each stage of the pipeline with `./vitarecomp` from the top of the checkout. Run it without
-arguments for the full list.
-
-On Windows, use the Python driver directly from PowerShell instead of the zsh wrapper:
-
-```powershell
-.\.venv\Scripts\python.exe .\pipeline\vitarecomp.py --help
+```sh
+python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+launcher/build.sh          # the launcher: launcher/nativ
 ```
 
-Replace `--help` with a stage and its arguments. The Windows player release includes its own Python and toolchain;
-the [developer guide](docs/developers.md#making-a-release) describes building that distribution on macOS or Linux.
+On a Mac, build the libraries once first with `runtime/platform/macos/setup-toolchain.sh`. To make a self-contained
+install a player can run, use `dev/macos-install.sh <folder>` (makes `Encore.app`), `dev/windows-install.sh <folder>` or
+`dev/linux-install.sh <folder>`.
 
-The main stages, in order:
+You can also run each step yourself with `./vitarecomp` (on Windows, `.venv\Scripts\python.exe pipeline\vitarecomp.py`).
+Run it with no arguments for the full list:
 
 | Command | What it does |
 |---|---|
 | `firmware <PUP>` | Decrypts Sony's firmware update file. |
 | `scan <folder>` | Finds games, updates and firmware files in a folder, at any depth. |
 | `add <copy>` | Adds a game or its update. `import` takes one that's already decrypted. |
-| `analyze <title>` | Finds the game's functions. |
-| `recompile <title>` | Translates them to C. |
-| `build <title>` | Compiles the game. |
+| `analyze <title>`, `recompile <title>`, `build <title>` | Finds the game's functions, translates them to C and compiles them. |
 | `run <title>` | Plays it. |
-| `check <titles>` | Runs the regression gate. |
 
-The pipeline's Python needs the packages in `requirements.txt`, installed in `.venv` at the top of the checkout.
-The Windows player release includes its Python in `python/`.
+Your games, firmware, builds and saves live in one library folder, kept apart from the install:
+`~/Library/Application Support/ProjectNativ/Nativ/library` on macOS, `~/.local/share/ProjectNativ/Nativ/library` on
+Linux and `%LOCALAPPDATA%\ProjectNativ\Nativ\library` on Windows (or `dump/` inside a checkout). The folder keeps
+Project Nativ's name, so an existing library works as it is.
 
-### Your library
+## How it works
 
-Your games, firmware, licences, builds and saves live in one library folder:
+A Vita game is ARM code written against Sony's system software, and Encore handles the two separately:
 
-- `dump/` inside a checkout, which git ignores;
-- otherwise your per-user data folder: `~/Library/Application Support/ProjectNativ/Nativ/library` on macOS, under
-  `~/.local/share` on Linux and under `%LOCALAPPDATA%` on Windows;
-- or wherever `ATIV_DUMP` points.
+- **The game's code is recompiled.** A static recompiler translates the game's ARMv7 code into C once, ahead of time,
+  and that C is compiled into a native program.
+- **The system underneath is rebuilt.** Sony's own libraries that the game loads are recompiled with it from your
+  firmware. Below them, a runtime stands in for the Vita's kernel and hardware: it runs the game's threads, draws its
+  graphics on your GPU and plays its sound.
 
-### Installing
+The technical documentation goes deeper: [how it works](docs/architecture.md), [working on it](docs/developers.md),
+[the runtime](docs/runtime.md), [debugging a game](docs/debugging.md), [verification](docs/verification.md),
+[the shader compiler](docs/shader-compiler.md) and [the Vita's GPU instruction set](docs/usse-isa.md). These come from
+Project Nativ and use its name, and some of its other games as examples.
 
-`./vitarecomp dist <folder>` writes an install that holds only what ships. Running it again over an install it wrote
-updates the program and leaves your library alone. Two scripts add what a player's machine lacks:
+## Credits
 
-- **Linux:** `dev/linux-install.sh <folder>` adds its own compiler and Python, for machines like the Steam Deck that
-  have neither.
-- **macOS:** `dev/macos-install.sh <folder>` adds SDL, SPIRV-Cross, FFmpeg's H.264 decoder and Python, and a
-  `Project Nativ.app` to start it. The player needs only Apple's Command Line Tools, which the app offers to install.
-  Build the libraries once with `runtime/platform/macos/setup-toolchain.sh`.
+Encore stands on other people's work:
 
-The [player guide](docs/player-guide.md) covers the rest from the player's side: first run, controls, online play and
-reporting a bug.
+- **[Project Nativ](https://github.com/TheLostPantheon/nativ)** by TheLostPantheon and its contributors: the recompiler,
+  runtime and pipeline that everything here runs on. If you'd like to support it, its developer has a
+  [Ko-fi](https://ko-fi.com/kingtorro).
+- **[PersonaDancingRecomp](https://github.com/Ecstatic-Magician/PersonaDancingRecomp)** by Ecstatic-Magician: the
+  Persona Dancing game packs and renderer fixes that Encore is forked from.
+- The third-party libraries listed in [THIRD_PARTY.md](THIRD_PARTY.md), each under its own licence.
+- **Atlus** made the games, and Dingo developed Persona 4: Dancing All Night. Please support them by buying them.
 
-## Repository layout
-
-| Folder | What's in it |
-|---|---|
-| `launcher/` | The launcher (`hub.cpp`): your library, first-run setup and settings. It runs the pipeline for you. |
-| `pipeline/` | The `vitarecomp` driver, plus game and licence handling. |
-| `recompiler/` | The static recompiler, its runtime header `rt.h`, and seeds for functions the analysis misses. |
-| `runtime/` | What a recompiled game runs on: `core/` (kernel and libraries), `gfx/` (graphics), `audio/`, `media/`, `input/`, `net/` (networking and online play), `ui/` (window and in-game menu), `platform/`, `debug/` and `tests/`. `build.py` builds it. |
-| `packs/<title>/` | One folder per game: `pack.toml` (versions, modules, hooks and settings), `hooks.c` (that game's code patches) and `shaders.txt` (its shader recipes). |
-| `decrypt/` | Decrypting firmware updates and game packages, converting SELF to ELF, and the table of Sony's function names. |
-| `servers/` | Killzone's login server stand-in (`kzserver/`) and the relay node for online play (`nativ-node/`). |
-| `dev/` | Developer tools: replays, diffs and bisects, the remote gate, tests and firmware research. |
-| `third_party/` | Dear ImGui, stb, LibAtrac9, Monocypher and the HE-VAG tables, each with its licence. |
-| `docs/` | The documentation listed below. |
-| `assets/brand/` | The logo, wordmark and app icons, all drawn from one geometry by `make.py`. |
-
-## Documentation
-
-- [Player guide](docs/player-guide.md): installing, first run, controls, online play, known issues and bug reports.
-- [How it works](docs/architecture.md): the design, layer by layer.
-- [Working on Nativ](docs/developers.md): the pipeline, packs and versions, and working across machines.
-- [The runtime in detail](docs/runtime.md): display timing, audio, the GPU backend, controls, hooks and metrics.
-- [Verification](docs/verification.md): the regression gate and how the translation and renderer are checked.
-- [Debugging a game](docs/debugging.md): logs, captures, replays and the renderer's switches.
-- [Online play](docs/online.md): matchmaking, finding other players, and the encrypted links between them.
-- [The shader compiler](docs/shader-compiler.md) and [the USSE instruction set](docs/usse-isa.md): the Vita's GPU
-  shaders and how we translate them.
+Encore is an unofficial fan project. It isn't affiliated with or endorsed by Atlus, SEGA or Sony, and Persona is a
+trademark of Atlus. It contains no Sony or game code: the games are decrypted and recompiled on your machine and never
+leave it.
 
 ## Licence
 
-Project Nativ is free software under the GNU General Public License, version 2 or (at your option) any later version:
-see [LICENSE](LICENSE). Third-party code keeps its own licence, and [THIRD_PARTY.md](THIRD_PARTY.md) lists it with
-the projects parts of Nativ are ported from.
-
-Nativ contains no Sony or game code. You supply your own games and the firmware from Sony's site; the games are
-recompiled on your machine and never leave it.
+Encore is free software under the GNU General Public License, version 2 or (at your option) any later version, the same
+as Project Nativ: see [LICENSE](LICENSE). It's a modified version of PersonaDancingRecomp and Project Nativ; the git
+history records what changed. Third-party code keeps its own licence (see [THIRD_PARTY.md](THIRD_PARTY.md)).
 
 ## AI disclaimer
 
-Nativ is made with the help of AI tools: much of its code and documentation was written with AI assistance, under its
-developer's direction, and tested on the games themselves.
-
-## Supporting Nativ
-
-Nativ is free, and everything in it is for everyone. If you'd like to support its development, you can leave a tip on
-[Ko-fi](https://ko-fi.com/kingtorro).
+Like Project Nativ, Encore is developed with the help of AI tools: much of its code and documentation was written with
+AI assistance, under its maintainer's direction, and tested on the games themselves.

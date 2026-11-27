@@ -1,9 +1,9 @@
 #!/bin/bash
 # release.sh <tag> <os>...: a release's downloads, made on this machine in build/release/<tag>/. For each OS named:
-#   mac      ProjectNativ-<tag>-mac.dmg: Project Nativ.app (dev/macos-install.sh) beside a link to Applications, the
+#   mac      Encore-<tag>-mac.dmg: Encore.app (dev/macos-install.sh) beside a link to Applications, the
 #            player drags one onto the other; made on a Mac
-#   windows  ProjectNativ-<tag>-windows.zip, one ProjectNativ folder inside (dev/windows-install.sh; on macOS or Linux)
-#   linux    ProjectNativ-<tag>-linux.AppImage: the install (dev/linux-install.sh) as one file the player marks
+#   windows  Encore-<tag>-windows.zip, one Encore folder inside (dev/windows-install.sh; on macOS or Linux)
+#   linux    Encore-<tag>-linux.AppImage: the install (dev/linux-install.sh) as one file the player marks
 #            executable and runs, a Steam Deck's non-Steam game too; made on Linux (appimagetool and its runtime fetched
 #            once, pinned by SHA-256)
 # then SHA256SUMS over every download there (a release made on two machines: copy the other's in, run again with no OS).
@@ -23,6 +23,7 @@
 set -euo pipefail
 H=$(cd "$(dirname "$0")" && pwd); ROOT=$(dirname "$H")
 [[ -f $ROOT/dev/local.env ]] && { set -a; source "$ROOT/dev/local.env"; set +a; }   # (exported: the install scripts and vitarecomp dist read them)
+export NATIV_RELEASES=${NATIV_RELEASES-BittahBandit1/encore}   # Encore's own releases are its update channel (set it empty for none)
 TAG=${1:?usage: release.sh <tag> [mac|windows|linux]...}; shift
 [[ $TAG =~ ^v[0-9]+\.[0-9]+(\.[0-9]+)?$ ]] || { echo "release.sh: a tag like v0.1.0"; exit 1; }
 if (( $# )); then
@@ -60,11 +61,11 @@ PY
 }
 
 for os in "$@"; do
-  W=$OUT/work-$os; rm -rf "$W"; mkdir -p "$W"; I=$W/ProjectNativ; Z=$OUT/ProjectNativ-$TAG-$os.zip; rm -f "$Z"
+  W=$OUT/work-$os; rm -rf "$W"; mkdir -p "$W"; I=$W/Encore; Z=$OUT/Encore-$TAG-$os.zip; rm -f "$Z"
   case $os in
     mac)
       [[ $(uname) == Darwin ]] || { echo "release.sh: the Mac install is made on a Mac"; exit 1; }
-      bash "$H/macos-install.sh" "$W"; APP="$W/Project Nativ.app"; Z=$OUT/ProjectNativ-$TAG-mac.dmg; rm -f "$Z"
+      bash "$H/macos-install.sh" "$W"; APP="$W/Encore.app"; Z=$OUT/Encore-$TAG-mac.dmg; rm -f "$Z"
       if [[ -n ${NATIV_SIGN_ID:-} ]]; then
         ENT=$W/entitlements.plist   # (Python loads its own modules' libraries; a game may use this Mac's camera)
         printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>' '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' \
@@ -74,7 +75,7 @@ for os in "$@"; do
           t=$(file -b "$f"); [[ $t == Mach-O* ]] || continue
           if [[ $t == *executable* ]]; then sign --entitlements "$ENT" "$f"; else sign "$f"; fi >/dev/null 2>&1 || { echo "release.sh: signing $f failed"; sign "$f"; exit 1; }
           n=$((n + 1))
-        done < <(find "$APP/Contents/Resources" "$APP/Contents/MacOS" -type f ! -path "$APP/Contents/MacOS/Project Nativ" -print0)
+        done < <(find "$APP/Contents/Resources" "$APP/Contents/MacOS" -type f ! -path "$APP/Contents/MacOS/Encore" -print0)
         sign --entitlements "$ENT" "$APP"; codesign --verify --strict --deep "$APP"; echo "signed: $n libraries and programs, and the app"
         if [[ -n ${NATIV_NOTARY_PROFILE:-} ]]; then
           ditto -c -k --keepParent "$APP" "$W/app.zip"
@@ -82,8 +83,8 @@ for os in "$@"; do
           xcrun stapler staple -q "$APP"
         fi
       fi
-      mkdir -p "$W/dmg"; ditto "$APP" "$W/dmg/Project Nativ.app"; ln -s /Applications "$W/dmg/Applications"
-      hdiutil create -quiet -volname "Project Nativ" -srcfolder "$W/dmg" -ov -format UDZO "$Z"
+      mkdir -p "$W/dmg"; ditto "$APP" "$W/dmg/Encore.app"; ln -s /Applications "$W/dmg/Applications"
+      hdiutil create -quiet -volname "Encore" -srcfolder "$W/dmg" -ov -format UDZO "$Z"
       if [[ -n ${NATIV_SIGN_ID:-} ]]; then
         codesign --force --timestamp --sign "$NATIV_SIGN_ID" "$Z"
         if [[ -n ${NATIV_NOTARY_PROFILE:-} ]]; then
@@ -104,10 +105,10 @@ for d, _, files in os.walk(root):
 with open(os.path.join(root, ".nativ-files"), "w", encoding="utf-8", newline="\n") as o:
     for r, n in sorted(rows): o.write(f"{n} {r}\n")
 PY
-      (cd "$W" && zipdir "$Z" ProjectNativ);;
+      (cd "$W" && zipdir "$Z" Encore);;
     linux)
       [[ $(uname) == Linux ]] || { echo "release.sh: the Linux install is made on Linux"; exit 1; }
-      bash "$H/linux-install.sh" "$I"; Z=$OUT/ProjectNativ-$TAG-linux.AppImage; rm -f "$Z"
+      bash "$H/linux-install.sh" "$I"; Z=$OUT/Encore-$TAG-linux.AppImage; rm -f "$Z"
       AT_VER=1.9.1 AT_SHA=ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0   # appimagetool
       RT_VER=20251108 RT_SHA=2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d   # its runtime (static: no libfuse2 needed)
       DL=${ATIV_LINUX_TOOLCHAIN:-$HOME/toolchains/ativ-linux}/dl; mkdir -p "$DL"
@@ -117,8 +118,8 @@ PY
       getv appimage-runtime-$RT_VER "https://github.com/AppImage/type2-runtime/releases/download/$RT_VER/runtime-x86_64" "$RT_SHA"
       chmod +x "$DL/appimagetool-$AT_VER"
       printf '#!/bin/sh\nexec "$APPDIR/launcher/nativ" "$@"\n' > "$I/AppRun"; chmod +x "$I/AppRun"   # (the AppImage's start: the launcher, which finds its folder)
-      printf '[Desktop Entry]\nType=Application\nName=Project Nativ\nComment=Your PS Vita games, rebuilt natively\nExec=nativ\nIcon=project-nativ\nCategories=Game;\nTerminal=false\n' > "$I/project-nativ.desktop"
-      cp "$I/assets/brand/png/icon-256.png" "$I/project-nativ.png"; rm -f "$I/Project Nativ.sh"
+      printf '[Desktop Entry]\nType=Application\nName=Encore\nComment=The Persona Dancing games, rebuilt natively\nExec=nativ\nIcon=encore\nCategories=Game;\nTerminal=false\n' > "$I/encore.desktop"
+      cp "$I/assets/brand/png/icon-256.png" "$I/encore.png"; rm -f "$I/Encore.sh"
       ARCH=x86_64 "$DL/appimagetool-$AT_VER" --appimage-extract-and-run --no-appstream --runtime-file "$DL/appimage-runtime-$RT_VER" "$I" "$Z" >/dev/null;;
     *) echo "release.sh: mac, windows or linux, not $os"; exit 1;;
   esac
@@ -126,5 +127,5 @@ PY
   echo "$Z ($(du -h "$Z" | cut -f1))"
 done
 
-(cd "$OUT" && rm -f SHA256SUMS && shopt -s nullglob && sha ProjectNativ-"$TAG"-*.{zip,dmg,AppImage} > SHA256SUMS && cat SHA256SUMS)
-echo "to publish: gh release create $TAG $OUT/ProjectNativ-$TAG-*.{zip,dmg,AppImage} $OUT/SHA256SUMS --repo ${NATIV_RELEASES:-<owner>/<repo>} --title \"Project Nativ $TAG\" --notes-file <notes.md>"
+(cd "$OUT" && rm -f SHA256SUMS && shopt -s nullglob && sha Encore-"$TAG"-*.{zip,dmg,AppImage} > SHA256SUMS && cat SHA256SUMS)
+echo "to publish: gh release create $TAG $OUT/Encore-$TAG-*.{zip,dmg,AppImage} $OUT/SHA256SUMS --repo ${NATIV_RELEASES:-<owner>/<repo>} --title \"Encore $TAG\" --notes-file <notes.md>"

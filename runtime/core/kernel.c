@@ -477,16 +477,38 @@ static void h_unregister_thread_event(Cpu *c) {
 	RET(0x80028061u);   /* UNKNOWN_THREAD_EVENT_ID */
 }
 
+/* thread uids: one counter, never reused (a slot is: below) */
+static uint32_t thread_uid_n;
+static uint32_t new_thread_uid(void) { return 0x40010100 + 2 * thread_uid_n++; }   /* klock held */
+/* a slot whose thread is deleted and over (or was deleted before it started): reused by the next CreateThread, its guest
+ * stack too when big enough. Without it every thread a game ever made kept its slot and its stack: P3D starts an
+ * 'addContMountThread' for each try at an add-on whose files aren't there, and quick scrolling in the track select made
+ * ~1000 of them -- "thread table full", after which no loader could start and the menu stuck (2026-11-23) */
+static Thread *reusable_slot(uint32_t want_stack, uint32_t *stack, uint32_t *stack_size) {   /* klock held */
+	for (int i = 0; i < nthreads; i++) {
+		Thread *t = &threads[i];
+		if (!t->deleted || (t->started && !t->done) || t->fiber) continue;
+		*stack = t->stack_size >= want_stack ? t->stack : 0; *stack_size = *stack ? t->stack_size : 0;
+		if (t->cpu) free(t->cpu);
+		return t;
+	}
+	return 0;
+}
 static void h_create_thread(Cpu *c) {   /* (name, entry, priority, stack size, attr, affinity, opt) */
 	pthread_mutex_lock(&klock);
-	if (nthreads >= MAX_THREADS) { pthread_mutex_unlock(&klock); fprintf(stderr, "thread table full (%d)\n", MAX_THREADS); RET(0x80028020u); return; }   /* THREAD_ERROR */
-	Thread *t = &threads[nthreads];
+	const uint32_t want = A3 < 0x4000 ? 0x4000 : A3;
+	uint32_t old_stack = 0, old_size = 0;
+	Thread *t = reusable_slot(want, &old_stack, &old_size);
+	if (!t) {
+		if (nthreads >= MAX_THREADS) { pthread_mutex_unlock(&klock); fprintf(stderr, "thread table full (%d)\n", MAX_THREADS); RET(0x80028020u); return; }   /* THREAD_ERROR */
+		t = &threads[nthreads++];
+	}
 	memset(t, 0, sizeof *t);
-	t->uid = 0x40010100 + 2 * nthreads++;
+	t->uid = new_thread_uid();
 	t->entry = A1;
 	t->init_prio = t->prio = priority_of(A2);
-	t->stack_size = A3 < 0x4000 ? 0x4000 : A3;
-	t->stack = guest_alloc(t->stack_size, 4096);
+	t->stack_size = old_stack ? old_size : want;
+	t->stack = old_stack ? old_stack : guest_alloc(t->stack_size, 4096);
 	t->attr = STK(0); t->affinity = STK(1);
 	snprintf(t->name, sizeof t->name, "%s", A0 ? (char *)G(A0) : "?");
 	pthread_mutex_unlock(&klock);
@@ -550,9 +572,9 @@ static void h_start_thread(Cpu *c) {   /* (uid, arg size, arg block): the block 
  * way: some end it with sceKernelExitThread) -> its exit status */
 uint32_t kernel_run_thread(const char *name, uint32_t entry) {
 	pthread_mutex_lock(&klock);
-	Thread *t = &threads[nthreads];
+	Thread *t = &threads[nthreads++];
 	memset(t, 0, sizeof *t);
-	t->uid = 0x40010100 + 2 * nthreads++;
+	t->uid = new_thread_uid();
 	t->entry = entry; t->stack_size = 0x40000; t->stack = guest_alloc(t->stack_size, 4096);
 	t->init_prio = t->prio = 160;
 	snprintf(t->name, sizeof t->name, "%s", name);
@@ -1296,6 +1318,29 @@ void kernel_report_locks(void) {
 		for (Waiter *w = o->head; w; w = w->next) { Thread *t = thread_of(w->tid); fprintf(stderr, " %#x (%s)", w->tid, t ? t->name : "?"); }
 		fprintf(stderr, "\n");
 		pthread_mutex_unlock(&o->m);
+	}
+}
+/* the run's end summary (main.c), beside the locks: every live guest thread, by name, and what it is blocked on -- the
+ * object's kind, uid, name and state (a semaphore's count, an event flag's bits, a mutex's owner) and the guest's link
+ * register where it called in. A menu that never moves on (P3D's track select after quick scrolling, 2026-11-23) shows
+ * as a loader parked on something nobody will signal. Reads without taking the objects' locks: a snapshot, maybe torn. */
+void kernel_report_threads(void) {
+	static const char *const kinds[] = {"?", "sema", "mutex", "lwmutex", "lwcond", "eventflag", "cond", "event", "rwlock", "msgpipe", "callback"};
+	fprintf(stderr, "== guest threads: what each waits on\n");
+	for (int i = 0; i < nthreads; i++) {
+		Thread *t = &threads[i];
+		if (!t->started || t->done || t->deleted) continue;
+		fprintf(stderr, "  %#x %-24.24s prio %3d lr %#x: ", t->uid, t->name, t->prio, t->cpu ? t->cpu->r[14] : 0);
+		if (!t->wait_type) { fprintf(stderr, "running / ready\n"); continue; }
+		Obj *o = 0;
+		for (int j = 0; j < nobjs && !o; j++) { Obj *x = obj_at((uint32_t)j); if (x && x->uid == t->wait_id) o = x; }
+		if (!o) { fprintf(stderr, "wait type %u on %#x\n", t->wait_type, t->wait_id); continue; }
+		fprintf(stderr, "%s %#x%s%.32s", o->kind >= 1 && o->kind <= 10 ? kinds[o->kind] : "?", o->kind == LWMUTEX ? o->work : o->uid, o->name[0] ? " " : "", o->name);
+		if (o->kind == SEMA) fprintf(stderr, " (count %d of %d)", o->count, o->max);
+		else if (o->kind == EVF || o->kind == SEVENT) fprintf(stderr, " (bits %#x)", o->bits);
+		else if (o->kind == MUTEX || o->kind == LWMUTEX) { Thread *ow = o->count ? thread_of(o->owner) : 0; fprintf(stderr, " (owner %#x %s)", o->count ? o->owner : 0, ow ? ow->name : o->count ? "?" : "free"); }
+		else if (o->kind == LWCOND || o->kind == KCOND) fprintf(stderr, " (with mutex %#x)", o->kind == LWCOND ? o->lwmutex : o->mutex_uid);
+		fprintf(stderr, ", %d waiting%s\n", o->nwait, o->deleted ? ", deleted" : "");
 	}
 }
 void kernel_notify_callback(uint32_t uid, uint32_t count, uint32_t arg) { Obj *o = by_uid(uid, CALLBACK); if (o) cb_notify(o, 0, count, arg); }

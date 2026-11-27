@@ -100,6 +100,7 @@ static void summary(const char *why) {
 		        hle_find(counts[i].name) ? "" : "   (stub)");
 	summary_threads();
 	{ extern void kernel_report_locks(void); kernel_report_locks(); }   /* who holds what the waiting threads want */
+	{ extern void kernel_report_threads(void); kernel_report_threads(); }   /* every guest thread and what it is blocked on */
 	{ extern void gxm_sony_report(void); gxm_sony_report(); }   /* RECOMP_GXM_CHECK's findings */
 #ifdef RECOMP_VERIFY
 	extern void verify_summary(void), coverage_write(void), watch_summary(void);
@@ -657,8 +658,14 @@ static void builtin_env(void) {
 	if (n) fprintf(stderr, "    the game's built-in settings applied: %d (its pack's RUN_ENV; RECOMP_NO_RUN_ENV=1 skips them)\n", n);
 #endif
 }
+#ifdef RECOMP_MOBILE
+#define main recomp_main   /* (a phone's start is runtime/platform/mobile_main.c's SDL_main, which calls this) */
+#endif
 int main(int argc, char **argv) {
 	builtin_env();
+#ifdef __APPLE__
+	if (!getenv("MTL_HUD_ENABLED")) setenv("MTL_HUD_ENABLED", "1", 0);
+#endif
 #ifdef __linux__
 	/* RECOMP_DEBUGGABLE=1: let any process attach a debugger (Yama ptrace_scope 1 only allows the
 	 * parent): `gdb -p` / `eu-stack -p` thread dumps of a stalled run without root */

@@ -43,7 +43,7 @@ enum {
 	SpvOpBitwiseAnd = 199, SpvOpBitFieldInsert = 201, SpvOpBitFieldUExtract = 203,
 	SpvOpSelect = 169, SpvOpIEqual = 170, SpvOpINotEqual = 171, SpvOpFOrdLessThan = 184,
 	SpvOpFOrdGreaterThanEqual = 190, SpvOpLabel = 248, SpvOpReturn = 253, SpvOpKill = 252,
-	SpvOpImageSampleImplicitLod = 87, SpvOpImageSampleExplicitLod = 88, SpvOpUGreaterThanEqual = 174,
+	SpvOpImageSampleImplicitLod = 87, SpvOpImageSampleExplicitLod = 88, SpvOpUGreaterThanEqual = 174, SpvOpULessThanEqual = 178,
 	SpvOpFOrdEqual = 180, SpvOpFOrdNotEqual = 182, SpvOpFOrdLessThanEqual = 188, SpvOpFOrdGreaterThan = 186,
 	SpvOpLogicalOr = 166, SpvOpLogicalAnd = 167, SpvOpLogicalNot = 168, SpvOpBitwiseXor = 198, SpvOpINotEqualB = 171,
 	SpvOpSLessThan = 177, SpvOpSLessThanEqual = 179, SpvOpSGreaterThanEqual = 175,
@@ -149,7 +149,35 @@ static void assert_ids(const char *where, uint32_t type, uint32_t a0, uint32_t a
 }
 static uint32_t result1(Spv *s, Buf *b, int op, uint32_t type, uint32_t a0) { assert_ids("result1", type, a0, 1, 1); uint32_t id = nid(s); INS(b, op, type, id, a0); return id; }
 static uint32_t result2(Spv *s, Buf *b, int op, uint32_t type, uint32_t a0, uint32_t a1) { assert_ids("result2", type, a0, a1, 1); uint32_t id = nid(s); INS(b, op, type, id, a0, a1); return id; }
-static uint32_t result3(Spv *s, Buf *b, int op, uint32_t type, uint32_t a0, uint32_t a1, uint32_t a2) { assert_ids("result3", type, a0, a1, a2); uint32_t id = nid(s); INS(b, op, type, id, a0, a1, a2); return id; }
+static uint32_t t_uint(Spv *s); static uint32_t c_uint(Spv *s, uint32_t v);
+/* bitfield ops as shifts and masks (no_bitfield(): a phone by default, RECOMP_GPU_BITFIELD=1 keeps them): Adreno 710's compiler
+ * refused pipelines with many OpBitFieldUExtract/Insert -- the more of them a mode emitted, the more failed (2026-11-24) */
+static int no_bitfield(void) {
+	static int v = -1;
+	if (v < 0) { const char *e = getenv("RECOMP_GPU_BITFIELD");
+#ifdef RECOMP_MOBILE
+		v = !(e && *e == '1');
+#else
+		v = e && *e == '0';
+#endif
+	}
+	return v;
+}
+static uint32_t result3_raw(Spv *s, Buf *b, int op, uint32_t type, uint32_t a0, uint32_t a1, uint32_t a2) { assert_ids("result3", type, a0, a1, a2); uint32_t id = nid(s); INS(b, op, type, id, a0, a1, a2); return id; }
+static uint32_t result2_raw(Spv *s, Buf *b, int op, uint32_t type, uint32_t a0, uint32_t a1) { uint32_t id = nid(s); INS(b, op, type, id, a0, a1); return id; }
+static uint32_t result3(Spv *s, Buf *b, int op, uint32_t type, uint32_t a0, uint32_t a1, uint32_t a2) {
+	if ((op == 203 /*UExtract*/ || op == 202 /*SExtract*/) && no_bitfield() && type == t_uint(s)) {
+		/* (x >> off) & ((1 << n) - 1); signed: (x << (32 - off - n)) >>arith (32 - n) */
+		const uint32_t tu = t_uint(s), c32 = c_uint(s, 32);
+		if (op == 203) {
+			uint32_t m = result2_raw(s, b, 194 /*ShiftRightLogical*/, tu, c_uint(s, 0xffffffffu), result2_raw(s, b, 130 /*ISub*/, tu, c32, a2));   /* (n = 32 too) */
+			return result2_raw(s, b, 199 /*BitwiseAnd*/, tu, result2_raw(s, b, 194 /*ShiftRightLogical*/, tu, a0, a1), m);
+		}
+		uint32_t up = result2_raw(s, b, 130, tu, result2_raw(s, b, 130, tu, c32, a1), a2);
+		return result2_raw(s, b, 195 /*ShiftRightArithmetic*/, tu, result2_raw(s, b, 196, tu, a0, up), result2_raw(s, b, 130, tu, c32, a2));
+	}
+	return result3_raw(s, b, op, type, a0, a1, a2);
+}
 static uint32_t glsl1(Spv *s, uint32_t inst, uint32_t a0) { return result3(s, &s->func, SpvOpExtInst, t_float(s), s->glsl_ext, inst, a0); }
 static uint32_t glsl2(Spv *s, uint32_t inst, uint32_t a0, uint32_t a1) {
 	uint32_t id = nid(s); INS(&s->func, SpvOpExtInst, t_float(s), id, s->glsl_ext, inst, a0, a1); return id;
@@ -256,7 +284,12 @@ uint32_t usse_spirv_vary_ncomp(const UsseVertexLayout *vl, int word) {
 }
 static int f16_mode(void) {
 	static int m = -1;
+#ifdef RECOMP_MOBILE   /* (a phone: the GPU's own conversion -- the masked one's integer work a pixel cost a mid-range GPU its 30 fps at a
+                        * wider aspect, Adreno 710, 2026-11-24; RECOMP_GPU_F16=masked for the exact one) */
+	if (m < 0) { const char *e = getenv("RECOMP_GPU_F16"); m = !e || !*e || !strcmp(e, "native") ? 2 : !strcmp(e, "masked") ? 1 : 0; }
+#else
 	if (m < 0) { const char *e = getenv("RECOMP_GPU_F16"); m = !e || !*e || !strcmp(e, "masked") ? 1 : !strcmp(e, "native") ? 2 : 0; }
+#endif
 	return m;
 }
 static uint32_t half_to_float_spv(Spv *s, uint32_t h_u32) {
@@ -304,9 +337,13 @@ static uint32_t float_to_half_spv(Spv *s, uint32_t f) {
 			bits = uop2(s, SpvOpBitwiseOr, bits, uop2(s, SpvOpShiftLeftLogical, nanf, c_uint(s, 22)));   /* a NaN stays one when the mask clears its payload */
 		}
 		if (f16_mode() == 1) {   /* truncate: clear the mantissa bits a half can't hold -- 13 for a normal half, up to 23 below (shift = clamp(126 - e, 13, 23)) */
-			uint32_t sh_i = uop2(s, SpvOpISub, c_int(s, 126), result1(s, &s->func, SpvOpBitcast, t_int(s), e));
-			uint32_t sh = nid(s); INS(&s->func, SpvOpExtInst, t_int(s), sh, s->glsl_ext, 45 /*SClamp*/, sh_i, c_int(s, 13), c_int(s, 23));
-			uint32_t low = uop2(s, SpvOpISub, uop2(s, SpvOpShiftLeftLogical, c_uint(s, 1), result1(s, &s->func, SpvOpBitcast, t_uint(s), sh)), c_uint(s, 1));
+			/* clamp(126 - e, 13, 23) in unsigned compares: e >= 113 is 13, e <= 103 is 23, 126 - e between (e is 0..255). As a
+			 * signed SClamp of an unsigned ISub it passed spirv-val and every desktop driver, and Adreno's (710) refused every
+			 * pipeline with it -- the draws went to the software path, 2 fps in Persona 3 Dancing's songs (2026-11-24) */
+			uint32_t mid = uop2(s, SpvOpISub, c_uint(s, 126), e);
+			uint32_t sh = result3(s, &s->func, SpvOpSelect, t_uint(s), result2(s, &s->func, SpvOpUGreaterThanEqual, t_bool(s), e, c_uint(s, 113)), c_uint(s, 13),
+			                      result3(s, &s->func, SpvOpSelect, t_uint(s), result2(s, &s->func, SpvOpULessThanEqual, t_bool(s), e, c_uint(s, 103)), c_uint(s, 23), mid));
+			uint32_t low = uop2(s, SpvOpISub, uop2(s, SpvOpShiftLeftLogical, c_uint(s, 1), sh), c_uint(s, 1));
 			src = result1(s, &s->func, SpvOpBitcast, t_float(s), uop2(s, SpvOpBitwiseAnd, bits, result1(s, &s->func, SpvOpNot, t_uint(s), low)));
 		}
 		uint32_t vecid = result2(s, &s->func, SpvOpCompositeConstruct, t_vec(s, t_float(s), 2), src, c_float(s, 0.0f));
@@ -404,6 +441,11 @@ static RegPtr idx_ptr(Gen *g, const UOperand *o, int add) {
 	r.ok = 1; return r;
 }
 static uint32_t bitfield_insert(Spv *s, uint32_t base, uint32_t insert, uint32_t offset, uint32_t count) {
+	if (no_bitfield()) {   /* (base & ~mask) | ((insert << off) & mask), mask = ((1 << n) - 1) << off (no_bitfield, above) */
+		const uint32_t tu = t_uint(s);
+		uint32_t mask = uop2(s, SpvOpShiftLeftLogical, uop2(s, SpvOpShiftRightLogical, c_uint(s, 0xffffffffu), uop2(s, SpvOpISub, c_uint(s, 32), count)), offset);
+		return uop2(s, SpvOpBitwiseOr, uop2(s, SpvOpBitwiseAnd, base, result1(s, &s->func, SpvOpNot, tu, mask)), uop2(s, SpvOpBitwiseAnd, uop2(s, SpvOpShiftLeftLogical, insert, offset), mask));
+	}
 	uint32_t id = nid(s); INS(&s->func, SpvOpBitFieldInsert, t_uint(s), id, base, insert, offset, count); return id;
 }
 static void write_comp_f16(Gen *g, const UOperand *o, int repeat_off, int comp, uint32_t fval, int *supported);
@@ -1830,6 +1872,17 @@ static void emit_vert_epilogue(Gen *g, int *ok) {
 	uint32_t vz = load(s, t_vec(s, t_float(s), 4), pz);
 	uint32_t zoff = composite_extract1(s, t_float(s), vz, 0), zscale = composite_extract1(s, t_float(s), vz, 1);
 	pos[2] = fop2(s, SpvOpFAdd, fop2(s, SpvOpFMul, zoff, pos[3]), fop2(s, SpvOpFMul, zscale, pos[2]));
+	{	/* the host's clip y mapping (UsseDrawUniforms.clip_y): y + y*k + w*o -- a narrower aspect's HUD squeezed into its band
+		 * without a smaller viewport, which clipped what the game draws past the screen's edge (Persona 3 Dancing's track
+		 * list circle, 2026-11-24); zeros for every other draw */
+		uint32_t pc = nid(s); INS(&s->func, SpvOpAccessChain, t_ptr(s, SpvStorageUniform, t_vec(s, t_float(s), 4)), pc, g->var_sa, c_uint(s, 7));
+		uint32_t vc = load(s, t_vec(s, t_float(s), 4), pc);
+		uint32_t ck = composite_extract1(s, t_float(s), vc, 0), co = composite_extract1(s, t_float(s), vc, 1);
+		pos[1] = fop2(s, SpvOpFAdd, pos[1], fop2(s, SpvOpFAdd, fop2(s, SpvOpFMul, ck, pos[1]), fop2(s, SpvOpFMul, co, pos[3])));
+		/* and x + x*kx (clip_y[2]): a wider aspect's menus squeezed back to 16:9 about the centre */
+		uint32_t cx = composite_extract1(s, t_float(s), vc, 2);
+		pos[0] = fop2(s, SpvOpFAdd, pos[0], fop2(s, SpvOpFMul, cx, pos[0]));
+	}
 	if (g->pos_only) {   /* the motion variant's second run: its position, nothing else */
 		uint32_t id = nid(s); INS(&s->func, SpvOpCompositeConstruct, t_vec(s, t_float(s), 4), id, pos[0], pos[1], pos[2], pos[3]);
 		store(s, g->var_mv_prev, id); return;
@@ -2151,7 +2204,8 @@ SpirvModule usse_spirv_translate(const UsseProgram *prog, const UsseVertexLayout
 	/* member 6: the units' LOD biases (UsseDrawUniforms.lod_bias, sample_lod) at 1456, as float bits */
 	uint32_t arr4v = t_array(s, t_vec(s, t_u, 4), c_uint(s, 4), 4);
 	INS(&s->decos, SpvOpDecorate, arr4v, 6 /*ArrayStride*/, 16);
-	uint32_t sa_struct = nid(s); { uint32_t sm[8] = { sa_struct, arr64, t_vec(s, t_float(s), 4), arr8, t_vec(s, t_u, 4), t_vec(s, t_u, 4), arr16v, arr4v }; ins(&s->types, 30 /*OpTypeStruct*/, 8, sm); }
+	/* member 7: the clip y mapping (UsseDrawUniforms.clip_y, emit_vert_epilogue) at 1520 */
+	uint32_t sa_struct = nid(s); { uint32_t sm[9] = { sa_struct, arr64, t_vec(s, t_float(s), 4), arr8, t_vec(s, t_u, 4), t_vec(s, t_u, 4), arr16v, arr4v, t_vec(s, t_float(s), 4) }; ins(&s->types, 30 /*OpTypeStruct*/, 9, sm); }
 	INS(&s->decos, SpvOpDecorate, sa_struct, SpvDecorationBlock);
 	INS(&s->decos, SpvOpMemberDecorate, sa_struct, 0, SpvDecorationOffset, 0);
 	INS(&s->decos, SpvOpMemberDecorate, sa_struct, 1, SpvDecorationOffset, 1024);
@@ -2160,6 +2214,7 @@ SpirvModule usse_spirv_translate(const UsseProgram *prog, const UsseVertexLayout
 	INS(&s->decos, SpvOpMemberDecorate, sa_struct, 4, SpvDecorationOffset, 1184);
 	INS(&s->decos, SpvOpMemberDecorate, sa_struct, 5, SpvDecorationOffset, 1200);
 	INS(&s->decos, SpvOpMemberDecorate, sa_struct, 6, SpvDecorationOffset, 1456);
+	INS(&s->decos, SpvOpMemberDecorate, sa_struct, 7, SpvDecorationOffset, 1520);
 	g.var_sa = global_var(s, t_ptr(s, SpvStorageUniform, sa_struct), SpvStorageUniform, 0);
 	INS(&s->decos, SpvOpDecorate, g.var_sa, SpvDecorationDescriptorSet, (uint32_t)(g.is_fragment ? 3 : 1));
 	INS(&s->decos, SpvOpDecorate, g.var_sa, SpvDecorationBinding, 0);

@@ -1,7 +1,7 @@
 #!/bin/bash
 # Does a self-contained Linux install (dev/linux-install.sh) build a game on a machine with no compiler, no headers, no
 # development libraries and no Python -- a Steam Deck's SteamOS -- and does what it builds run?
-#   sealed_linux_build.sh <install folder> [title, default PCSE00640] [work folder, default ~/.cache/nativ-sealed]
+#   sealed_linux_build.sh <install folder> [title, default PCSE00764] [work folder, default ~/.cache/nativ-sealed]
 # 1. A stand-in system: Arch Linux's bootstrap root (SteamOS is Arch underneath) with /usr/include deleted, as SteamOS ships
 #    it. It has bash, coreutils and glibc, and no gcc, clang, make, pkg-config, python or SDL.
 # 2. A test library holding a copy of the title's analysed game (this checkout's dump/decrypted/<title>, without its builds),
@@ -11,7 +11,7 @@
 #    build on this machine's GPU (this checkout's vitarecomp test, which runs the binary as built), and its frame compared
 #    with the title's reference.
 set -euo pipefail
-INST=$(cd "${1:?usage: sealed_linux_build.sh <install folder> [title] [work folder]}" && pwd); T=${2:-PCSE00640}; W=${3:-$HOME/.cache/nativ-sealed}
+INST=$(cd "${1:?usage: sealed_linux_build.sh <install folder> [title] [work folder]}" && pwd); T=${2:-PCSE00764}; W=${3:-$HOME/.cache/nativ-sealed}
 H=$(cd "$(dirname "$0")/../.." && pwd)
 ROOTFS=$W/rootfs LIB=$W/library
 mkdir -p "$W"

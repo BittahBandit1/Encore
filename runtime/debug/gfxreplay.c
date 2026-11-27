@@ -321,4 +321,6 @@ int main(int argc, char **argv) {
 /* replays compare against the software path: no anisotropic filtering unless RECOMP_ANISO asks (gfx_gpu.c aniso_want) */
 __attribute__((constructor)) static void replay_aniso_default(void) { setenv("RECOMP_ANISO", "1", 0); setenv("RECOMP_SHADOW_FILTER", "0", 0); }   /* (replays compare against the software path: no anisotropy, the game's own one-tap shadows, unless asked) */
 float window_aspect_widen(void) { const char *e = getenv("RECOMP_REPLAY_WIDEN"); return e ? (float)atof(e) : 1.0f; }   /* RECOMP_REPLAY_WIDEN=k: test the wider-x paths */
+float window_aspect_taller(void) { const char *e = getenv("RECOMP_REPLAY_TALLER"); return e ? (float)atof(e) : 1.0f; }   /* RECOMP_REPLAY_TALLER=t: the taller-y paths */
+int display_in_gameplay(void) { return getenv("RECOMP_REPLAY_GAMEPLAY") != 0; }   /* (display.c: a song being played -- the HUD layout for a narrower aspect) */
 void overlay_toast(const char *msg, double seconds) { (void)msg; (void)seconds; }   /* (F4's FSR toggle says so on screen: no window here) */

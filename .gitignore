@@ -16,3 +16,5 @@ launcher/obj_win/
 # kept on each machine, not shared: plans that aren't the project's yet, and this machine's defaults for the dev scripts
 docs/android.md
 dev/local.env
+# macOS metadata files on non-Apple drives (exFAT)
+._*

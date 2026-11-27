@@ -129,7 +129,7 @@ void guest_time_slept(uint32_t us) { (void)us; reads_in_row = 0; }
 static uint64_t t0, frames;
 static uint64_t frame_edges = 2;   /* the edges between the last two SetFrameBufs: how long the frame now on screen took */
 uint64_t display_frames(void) { return frames; }   /* presented frames so far (main.c's RECOMP_LOG_FROM_FRAME) */
-static uint64_t vb_now(void); static uint64_t vb_setbuf;   /* below: the vblank grid */
+static uint64_t vb_now(void), pf_now(void), pf_edge_us(uint64_t); static void vb_sleep_until(uint64_t); static uint64_t vb_setbuf;   /* below: vblank & present grids */
 static void vb_sleep_to_edge(uint64_t edge);   /* (below) */
 static uint32_t swap_seen;      /* the largest swap interval a SetFrameBuf wait asked for since the last SetFrameBuf: how long that frame stays up */
 static uint64_t present_edge;   /* the edge the last frame went to the window at (h_set_frame_buf) */
@@ -167,10 +167,11 @@ static void h_set_frame_buf(Cpu *c) {
 	metrics_game_frame();   /* once per presented game frame: frame-time stats, last frame's renderer/GPU-draw counts, the ~1 Hz RECOMP_METRICS line (metrics.c) */
 	frames++;
 	static uint64_t hitch_prev; uint64_t hitch_now = raw_us(), hitch_dur = hitch_prev ? hitch_now - hitch_prev : 0; hitch_prev = hitch_now;
-	{ uint64_t e = vb_now(); __atomic_store_n(&frame_edges, e - vb_setbuf, __ATOMIC_RELAXED); vb_setbuf = e; }
+	{ uint64_t e = pf_now(); __atomic_store_n(&frame_edges, e - vb_setbuf, __ATOMIC_RELAXED); vb_setbuf = e; }
 	{ uint64_t g = __atomic_load_n(&vblanks, __ATOMIC_RELAXED); __atomic_store_n(&frame_edges_g, g - vb_setbuf_g, __ATOMIC_RELAXED); vb_setbuf_g = g; }
 	load_mark();
 	if (frame_hook) frame_hook(frames);
+	{ extern void (*hook_on_frame)(void); if (hook_on_frame) hook_on_frame(); }
 	{ extern void memscan_frame(uint64_t); memscan_frame(frames); }   /* RECOMP_MEMSCAN (memscan.c) */
 	if (hitch_dur > 0 && hitch_dur < 200000) { float ms = hitch_dur / 1e3f; frame_period_ms += (ms - frame_period_ms) * 0.05f; }   /* the flip interval (display_frame_period_ms) */
 	{ extern void sysmem_dump_maybe(uint64_t); sysmem_dump_maybe(frames); }
@@ -189,7 +190,7 @@ static void h_set_frame_buf(Cpu *c) {
 	 * (headless runs and the gate pace as before); RECOMP_PRESENT_AT_VBLANK=0|1 overrides. */
 	{ static int at_vb = -1; if (at_vb < 0) { extern int window_active(void); const char *e = getenv("RECOMP_PRESENT_AT_VBLANK"); at_vb = e && *e ? atoi(e) != 0 : window_active(); }
 	  uint32_t hold = swap_seen ? swap_seen : 1; swap_seen = 0;
-	  if (at_vb) { uint64_t edge = vb_setbuf + 1; if (present_edge && present_edge + hold > edge) edge = present_edge + hold; vb_sleep_to_edge(edge); present_edge = edge; }
+	  if (at_vb) { uint64_t edge = vb_setbuf + 1; if (present_edge && present_edge + hold > edge) edge = present_edge + hold; (void)pf_now(); vb_sleep_until(pf_edge_us(edge)); present_edge = edge; }
 	  static int ptrace = -1; if (ptrace < 0) ptrace = getenv("RECOMP_PRESENT_TRACE") != 0;   /* RECOMP_PRESENT_TRACE=1: each present's distance from the one before (the cadence the window gets) */
 	  static uint64_t plast; uint64_t pnow = raw_us(); if (ptrace && plast) fprintf(stderr, "    present: +%.1f ms (set +%.1f ms)\n", (pnow - plast) / 1e3, hitch_dur / 1e3); plast = pnow; }
 	int b = sched_block_begin();   /* presenting is the display hardware's work: no run slot meanwhile (RECOMP_SCHED) */
@@ -208,9 +209,35 @@ static void h_set_frame_buf(Cpu *c) {
 /* vblank: a fixed 60 Hz grid from the first wait, as the display hardware has; a wait sleeps to
  * the next tick after now (restarting the period from "now" would add a whole period to every
  * late frame) */
+static int frame_rate_target(void), unpaced(void);
 static uint64_t vblank0;
 static const uint64_t vb_period = 16667;
-static uint64_t wall_edges(void) { uint64_t t = now_us(); if (!vblank0) vblank0 = t; return (t - vblank0) / vb_period; }   /* edges since the first wait */
+static uint64_t wall_edges(void) { uint64_t t = now_us(); if (!vblank0) vblank0 = t; return (t - vblank0) / vb_period; }   /* hardware 60 Hz vblank edges */
+/* Separate present/flip grid for SetFrameBuf & WaitSetFrameBuf*: 60 Hz at 30/60 fps, 90 Hz at 90, 120 Hz at 120.
+ * Keeps hardware vblank waits (sceDisplayWaitVblankStart*, vblank callbacks, pad pacing) at true 60 Hz! */
+static uint64_t pf_t0, pf_e0, pf_period = 16667;
+static pthread_mutex_t pf_grid_m = PTHREAD_MUTEX_INITIALIZER;
+static uint64_t pf_grid_sync(uint64_t t, uint64_t *out_period, uint64_t *out_t0, uint64_t *out_e0) {
+	int fr = frame_rate_target(); uint64_t want = fr >= 120 ? 8333 : fr >= 90 ? 11111 : 16667;
+	pthread_mutex_lock(&pf_grid_m);
+	if (!pf_t0) { pf_t0 = t; pf_e0 = 0; pf_period = want; }
+	else if (want != pf_period) {
+		uint64_t cur = pf_e0 + (t >= pf_t0 ? (t - pf_t0) / pf_period : 0);
+		pf_t0 = t; pf_e0 = cur; pf_period = want;
+	}
+	uint64_t e = pf_e0 + (t >= pf_t0 ? (t - pf_t0) / pf_period : 0);
+	if (out_period) *out_period = pf_period;
+	if (out_t0) *out_t0 = pf_t0;
+	if (out_e0) *out_e0 = pf_e0;
+	pthread_mutex_unlock(&pf_grid_m);
+	return e;
+}
+static uint64_t pf_now(void) { return unpaced() ? vclock_edges() : pf_grid_sync(now_us(), 0, 0, 0); }
+static uint64_t pf_edge_us(uint64_t e) {
+	if (unpaced()) return 0;
+	uint64_t p, t0, e0; pf_grid_sync(now_us(), &p, &t0, &e0);
+	return t0 + (e >= e0 ? (e - e0) * p : 0);
+}
 /* RECOMP_UNPACED=1 (with RECOMP_CLOCK=fixed): a throughput benchmark. The grid is the fixed clock's own vblank count instead of
  * the wall's: a wait that counts vblanks moves the clock and returns, one that counts none (a polling pad thread) waits for
  * another thread to move it, and nothing sleeps to an edge. The game sees the same clock as in a paced run (the fixed clock
@@ -224,7 +251,7 @@ static int unpaced(void) {
 	return from >= 0 && frames >= (uint64_t)from;
 }
 static uint64_t vb_now(void) { return unpaced() ? vclock_edges() : wall_edges(); }
-static uint64_t edge_us(uint64_t e) { return unpaced() ? 0 : vblank0 + e * vb_period; }   /* when edge e is, for a sleep to it (0: at once) */
+static uint64_t edge_us(uint64_t e) { return unpaced() ? 0 : vblank0 + e * vb_period; }   /* hardware 60 Hz vblank edge time */
 /* vb_setbuf (above): the edge count when the frame buffer was last set: the flip lands at the next edge */
 static __thread uint64_t vb_last_target;    /* the edge this thread last waited for */
 /* sleep until edge `target` (at least the next one), counting it for the fixed guest clock */
@@ -263,11 +290,11 @@ static void vb_sleep_until(uint64_t at) {   /* at: now_us() time; the thread is 
 	}
 	if (b) sched_block_end();
 }
-static void vb_sleep_to_edge(uint64_t edge) { (void)vb_now(); vb_sleep_until(vblank0 + edge * vb_period); }   /* (vb_now starts the grid if nothing waited yet) */
+static void vb_sleep_to_edge(uint64_t edge) { (void)vb_now(); vb_sleep_until(edge_us(edge)); }   /* (vb_now starts the grid if nothing waited yet) */
 static void vb_wait_until(uint64_t target, uint32_t count) {
 	reads_in_row = 0;
 	uint64_t now = vb_now(); if (target <= now) target = now + 1;
-	uint64_t t = now_us(), at = vblank0 + target * vb_period;
+	uint64_t t = now_us(), at = edge_us(target);
 	if (getenv("RECOMP_VBLANK_TRACE")) { static int k; if (k++ < 60) fprintf(stderr, "    vblank wait: edge %llu (now %llu), sleeping %lld us (frame %llu)\n", (unsigned long long)target, (unsigned long long)now, (long long)(at > t ? at - t : 0), (unsigned long long)frames); }
 	if (at > t) vb_sleep_until(at);
 	if (unpaced() && !count) {   /* (a wait that moves no clock: until another thread's does, or a while) */
@@ -298,9 +325,18 @@ static void h_wait_vblank_multi(Cpu *c) {
  * edge, and made a swap interval of 1 unreachable: both Unit 13 and Uncharted flip with Multi(n),
  * SetFrameBuf, WaitSetFrameBuf, so Multi(1)'s edge (setbuf + 1) was always just reached and got
  * bumped to the one after -- 30 fps whatever n said. The fixed clock counts the n vblanks either way. */
+static void pf_wait_until(uint64_t target, uint32_t count) {
+	reads_in_row = 0;
+	uint64_t now = pf_now(); if (target <= now) target = now + 1;
+	uint64_t t = now_us(), at = pf_edge_us(target);
+	if (at > t) vb_sleep_until(at);
+	if (overlay_paused()) { int b = sched_block_begin(); while (overlay_paused()) usleep(2000); if (b) sched_block_end(); }
+	vb_last_target = vb_now();
+	vblanks_add(count);
+}
 static void vb_wait_setbuf(uint64_t target, uint32_t count) {
 	if (clock_fixed()) count = (uint32_t)setbuf_guest_count(count);
-	if (target > vb_now()) { vb_wait_until(target, count); return; }
+	if (target > pf_now()) { pf_wait_until(target, count); return; }
 	reads_in_row = 0;
 	if (overlay_paused()) { int b = sched_block_begin(); while (overlay_paused()) usleep(2000); if (b) sched_block_end(); }
 	vb_last_target = vb_now();
@@ -312,8 +348,13 @@ static void vb_wait_setbuf(uint64_t target, uint32_t count) {
  * menu's choice applies at once. */
 static int forced_rate = -1;   /* display_force_frame_rate: a capture's switch (verify.c's F6), over everything else */
 void display_force_frame_rate(int fr) { forced_rate = fr; }
-static int frame_rate_60(void) {
-	if (forced_rate >= 0) return forced_rate >= 60;
+static int norm_rate(int r) { return r >= 120 ? 120 : r >= 90 ? 90 : r >= 60 ? 60 : 30; }   /* 90: a Steam Deck OLED's refresh */
+/* the last presented frame a pack's hook saw its game being played in (display_mark_gameplay): RECOMP_MOVIE_30 leaves those at the full rate */
+static volatile uint64_t display_gameplay_frame;
+void display_mark_gameplay(void) { display_gameplay_frame = frames; }
+int display_in_gameplay(void) { return display_gameplay_frame && frames < display_gameplay_frame + 15; }   /* (gfx_gpu.c: the HUD layout for a narrower aspect) */
+static int frame_rate_target(void) {
+	if (forced_rate >= 0) return norm_rate(forced_rate);
 	static int env = -2; static long from = -2;
 	if (env == -2) { const char *e = getenv("RECOMP_FRAME_RATE"); env = e && *e ? atoi(e) : -1; }
 	/* RECOMP_FRAME_RATE_AT="frame:rate,...": the rate from each presented frame on (the last entry at or before the frame
@@ -322,27 +363,37 @@ static int frame_rate_60(void) {
 	if (at) {
 		int r = 30;
 		for (const char *q = at; *q; ) { unsigned long f = strtoul(q, (char **)&q, 10); int v = 30; if (*q == ':') v = (int)strtol(q + 1, (char **)&q, 10); if (frames >= f) r = v; if (*q == ',') q++; else break; }
-		return r >= 60;
+		return norm_rate(r);
 	}
 	/* RECOMP_FRAME_RATE_FROM=n: 60 from presented frame n on (a recorded session plays its frame-keyed
 	 * input at 30 into a level, then the measurement runs at 60) */
 	if (from == -2) { const char *e = getenv("RECOMP_FRAME_RATE_FROM"); from = e && *e ? atol(e) : -1; }
-	if (from >= 0) return frames >= (uint64_t)from;
+	if (from >= 0) return frames >= (uint64_t)from ? 60 : 30;
 	/* RECOMP_FRAME_RATE_UNTIL=n: 60 up to presented frame n, 30 from there (a recorded 60 fps session
 	 * replayed to a frame-rate bug, then the same moment at 30: Uncharted's companion stuck on a log) */
 	static long until = -2;
 	if (until == -2) { const char *e = getenv("RECOMP_FRAME_RATE_UNTIL"); until = e && *e ? atol(e) : -1; }
-	if (until >= 0) return frames < (uint64_t)until;
-	int r60 = (env >= 0 ? env : settings_int("frame_rate", 30)) >= 60;
+	if (until >= 0) return frames < (uint64_t)until ? 60 : 30;
+	int r = norm_rate(env >= 0 ? env : settings_int("frame_rate", 30));
 	/* RECOMP_MOVIE_30=1 (a pack's): 30 fps while a movie plays (a picture decoded within the last 15 presented frames).
 	 * The movies are 30 fps themselves; what a game times to them in its own updates (Persona 4 Dancing's anime
 	 * cutscenes: their event-script subtitles, one script frame an update) keeps its time */
 	static int movie30 = -1; if (movie30 < 0) movie30 = getenv("RECOMP_MOVIE_30") != 0;
-	if (r60 && movie30) { extern uint64_t video_last_picture_frame; if (video_last_picture_frame && frames < video_last_picture_frame + 15) return 0; }
-	return r60;
+	if (r >= 60 && movie30 && !(display_gameplay_frame && frames < display_gameplay_frame + 15)) {   /* (not under gameplay: a pack's hook marks
+		 * the frames its game is being played in -- Persona 3 Dancing's songs danced over a movie keep the frame rate, their notes with it) */
+		extern uint64_t video_last_picture_frame; if (video_last_picture_frame && frames < video_last_picture_frame + 15) return 30; }
+	return r;
 }
+static int frame_rate_60(void) { return frame_rate_target() >= 60; }
+int display_frame_rate(void) { return frame_rate_target(); }
 int display_frame_rate_60(void) { return frame_rate_60(); }
-float display_frame_dt(void) { uint64_t e = __atomic_load_n(clock_fixed() ? &frame_edges_g : &frame_edges, __ATOMIC_RELAXED); return (float)(e < 1 ? 1 : e > 2 ? 2 : e) / 60.0f; }   /* 1/60..1/30 s (hooks.c: a game's fixed 1/30 steps at 60 fps) */
+float display_frame_dt(void) {
+	uint64_t e = __atomic_load_n(clock_fixed() ? &frame_edges_g : &frame_edges, __ATOMIC_RELAXED);
+	int fr = frame_rate_target();
+	int base = fr >= 60 ? fr : 60;   /* the present grid's rate: one edge is 1/base s */
+	uint64_t cap = (uint64_t)base / 30;
+	return (float)(e < 1 ? 1 : e > cap ? cap : e) / (float)base;
+}   /* 1/60..1/30 s at 60 fps, 1/90..1/30 at 90, 1/120..1/30 at 120 */
 static uint32_t swap_interval(uint32_t n) { if (!n) n = 1; if (n > 8) n = 8; return n > 1 && frame_rate_60() ? 1 : n; }
 static void h_wait_setbuf(Cpu *c) { if (!swap_seen) swap_seen = 1; vb_wait_setbuf(vb_setbuf + 1, 1); RET(0); }
 static void h_wait_setbuf_multi(Cpu *c) { uint32_t n = swap_interval(A0); if (n > swap_seen) swap_seen = n; vb_wait_setbuf(vb_setbuf + n, n); RET(0); }
@@ -414,13 +465,21 @@ static void h_wait_vblank_multi_cb(Cpu *c) {
 }
 /* the CB forms of the SetFrameBuf waits: the same "already up: return" rule (vb_wait_setbuf), with the
  * pending callbacks delivered; under the fixed clock they keep their edge-by-edge callback rounds */
+static void pf_wait_until_cb(Cpu *c, uint64_t target, uint32_t count) {
+	uint64_t now = pf_now(); if (target <= now) target = now + 1;
+	kernel_check_callbacks(c);
+	if (overlay_paused()) { int b = sched_block_begin(); while (overlay_paused()) usleep(2000); if (b) sched_block_end(); }
+	for (uint64_t e = now + 1; e <= target; e++) { kernel_cb_sleep(c, pf_edge_us(e)); kernel_check_callbacks(c); }
+	vb_last_target = vb_now();
+	vblanks_add(count);
+}
 static void vb_wait_setbuf_cb(Cpu *c, uint64_t target, uint32_t count) {
 	if (clock_fixed()) {   /* the guest's vblanks still to go, edge by edge with their callback rounds; none: the callbacks only */
 		count = (uint32_t)setbuf_guest_count(count);
 		if (count) vb_wait_until_cb(c, target, count); else { kernel_check_callbacks(c); vb_last_target = vb_now(); }
 		return;
 	}
-	if (target > vb_now()) { vb_wait_until_cb(c, target, count); return; }
+	if (target > pf_now()) { pf_wait_until_cb(c, target, count); return; }
 	kernel_check_callbacks(c);
 	if (overlay_paused()) { int b = sched_block_begin(); while (overlay_paused()) usleep(2000); if (b) sched_block_end(); }
 	vb_last_target = vb_now();
@@ -693,8 +752,10 @@ static void ctrl_peek(Cpu *c, int pad2) {   /* (port, SceCtrlData *, count): tim
 			unsigned long a = strtoul(q, (char **)&q, 10), z = a, m = 0;
 			if (*q == '-') z = strtoul(q + 1, (char **)&q, 10);
 			if (*q == ':') m = strtoul(q + 1, (char **)&q, 16);
-			if (frames >= a && frames <= z) {
-				WR32(p + 8, RD32(p + 8) | (uint32_t)m);
+			/* the 0x800000 bit (no Vita button) pulses the rest: pressed on alternate frames of the range, released between --
+			 * a fresh press every 33 ms over a whole song from one item (shader recording: every note hit on time) */
+			if (frames >= a && frames <= z && (!(m & 0x800000) || !((frames - a) & 1))) {
+				WR32(p + 8, RD32(p + 8) | (uint32_t)(m & 0x7fffff));
 				/* RECOMP_LOG_CTRL=1: the scripted presses as the game reads them (port, buffers asked,
 				 * the mask) -- Uncharted's menu ignored a scripted cross and this showed why */
 				static int logn = -1; if (logn < 0) logn = getenv("RECOMP_LOG_CTRL") ? 20 : 0;
@@ -740,8 +801,8 @@ static __thread uint64_t ctrl_read_edge[4], touch_read_edge[2];
 static void read_wait(uint64_t *last) {
 	static int nowait = -1; if (nowait < 0) nowait = getenv("RECOMP_READ_NOWAIT") != 0;
 	if (nowait) return;
-	uint64_t now = vb_now();
-	if (*last == now) { vb_wait_until(now + 1, 0); now = vb_now(); }   /* count 0: paces the thread, doesn't advance the fixed clock (a polling pad thread made guest time run 8x fast) */
+	uint64_t now = pf_now();
+	if (*last == now) { pf_wait_until(now + 1, 0); now = pf_now(); }   /* count 0: paces the thread, doesn't advance the fixed clock (a polling pad thread made guest time run 8x fast) */
 	*last = now;
 }
 static void h_ctrl_read(Cpu *c) { read_wait(&ctrl_read_edge[A0 & 3]); ctrl_peek(c, 0); }

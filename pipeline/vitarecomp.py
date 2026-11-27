@@ -59,6 +59,11 @@
                                             the recompiler, the decrypter, the runtime's sources, the packs; no tests
                                             or developer tools). Over an install a dist wrote it replaces the program
                                             and nothing else: the library, a python/ or .venv there stay
+  vitarecomp port      <title> <android|ios> [--no-data]   the game for a phone, handheld or tablet: built for it
+                                            (runtime/build.py TARGET=) and packed -- an APK and its data folder, or an
+                                            IPA/TIPA with the data inside (--no-data: without) -- under
+                                            <library>/ports/<target>/<title>, the newest copied to ~/Downloads/Encore
+                                            (pipeline/port.py; the toolchains: runtime/platform/<target>/setup-toolchain.sh)
   vitarecomp report    <title>              a bug report: the game's logs, the launcher's, the settings and the
                                             newest F5 frame history in one zip, <library>/reports/<title>-<time>.zip
   vitarecomp update-check                   is a newer release out? "update <tag> <page>" or "current" (an install
@@ -575,6 +580,28 @@ def cmd_build(g, mode):
         with open(os.path.join(g.OUT, ".built_version"), "w", newline="\n") as f: f.write(tools_version() + "\n")
 
 
+def cmd_port(g, target, args):
+    """the game built for a phone or tablet (runtime/build.py TARGET=android|ios) and packed by pipeline/port.py"""
+    import port
+    if target not in ("android", "ios"): die("vitarecomp port <title> android|ios [--no-data]")
+    if not os.path.isfile(os.path.join(g.OUT, g.BASE + ".c")): die(f"{g.T}: not recompiled yet (vitarecomp recompile {g.T})")
+    run_env = " ".join(x for x in (g.RUN_ENV, ENV.get("BUILD_EXTRA_ENV") or "") if x)
+    srcs = sorted(glob.glob(os.path.join(glob.escape(os.path.join(PACKS, g.PACK)), "*.c")))
+    e = env_with({"RECOMP_RUN_ENV": run_env, "RECOMP_GAME_ADDRS": g.GAME_ADDRS, "RECOMP_PACK_SOURCES": os.pathsep.join(srcs), "TARGET": target})
+    pd = os.path.join(g.OUT, "port_" + target); os.makedirs(pd, exist_ok=True)
+    base = os.path.join(g.OUT, g.BASE)
+    run([PY, os.path.join(RUNTIME, "build.py"), base, os.path.join(pd, g.BASE)] + [os.path.join(g.OUT, "mod_" + m) for m in g.MODS], env=e)
+    prog = os.path.join(pd, "libmain.so" if target == "android" else g.BASE)
+    shipped = os.path.join(PACKS, g.PACK, "shaders.txt")
+    game = {"title": g.TITLE_ID, "name": g.NAME or g.TITLE_ID, "short": g.c.get("SHORT_NAME") or "", "out": g.OUT,
+            "image": os.path.join(g.OUT, g.BASE + ".img"), "entry": g.entry(), "modules": [os.path.join(g.OUT, m + ".img") for m in g.MODS],
+            "shaders": shipped if os.path.isfile(shipped) else "",
+            # (the play settings vitarecomp run adds beside the pack's RUN_ENV, which the build carries)
+            "env": [("RECOMP_LOG", "0"), ("RECOMP_HITCH_LOG", "50")] + [tuple(w.split("=", 1)) for w in (ENV.get("EXTRA_ENV") or "").split() if "=" in w]}
+    dest = os.path.join(DUMP, "ports", target, g.T)
+    (port.android if target == "android" else port.ios)(game, prog, dest, with_data="--no-data" not in args)
+
+
 def game_env(g, words, extra):
     """the game's process environment: words (RUN_ENV / TEST_ENV, then EXTRA_ENV), then the fixed settings in order"""
     e = env_with(words=words)
@@ -627,7 +654,7 @@ def cmd_run(g, frames):
     icon = os.path.join(ROOT, "assets", "brand", "png", "icon-" + ("macos-512" if sys.platform == "darwin" else "256") + ".png")   # (the window's: window.c)
     fixed = ([("RECOMP_SHADER_RECIPES_SHIPPED", shipped)] if os.path.isfile(shipped) else []) + ([("RECOMP_ICON", icon)] if os.path.isfile(icon) and sys.platform != "win32" else []) + [
         ("RECOMP_TITLE", g.TITLE_ID), ("RECOMP_GAME_NAME", g.NAME), ("RECOMP_LOG", ENV.get("RECOMP_LOG") or "0"),
-        ("RECOMP_HITCH_LOG", ENV.get("RECOMP_HITCH_LOG") or "50"), ("RECOMP_STALL_PROF", ENV.get("RECOMP_STALL_PROF") or "150")]
+        ("RECOMP_HITCH_LOG", ENV.get("RECOMP_HITCH_LOG") or "50"), ("RECOMP_STALL_PROF", ENV.get("RECOMP_STALL_PROF") or "150")] + ([("MTL_HUD_ENABLED", ENV.get("MTL_HUD_ENABLED") or "1")] if sys.platform == "darwin" else [])
     # ATIV_PRE_LAUNCH / ATIV_POST_EXIT (the environment): commands run before the game starts and after it exits. On a machine
     # whose GPU is shared (a local AI model kept in VRAM, say) the GPU must be free BEFORE the game starts: a game that starts
     # into full VRAM keeps its allocations in system memory for the whole session, even once the model is gone (an Uncharted
@@ -919,7 +946,7 @@ def cmd_report(T):
     f5 = sorted(glob.glob(os.path.join(glob.escape(OUT), "captures", "f5_*")), key=os.path.getmtime)
     f5 = f5[-1] if f5 else ""
     stamp = lambda p: time.strftime("%Y-%m-%d %H:%M", time.localtime(os.path.getmtime(p)))
-    about = [("game", f"{name} ({T}), version {version}"), ("Project Nativ", nativ)] + _machine() + \
+    about = [("game", f"{name} ({T}), version {version}"), ("Encore (Project Nativ)", nativ)] + _machine() + \
         [(n, f"written {stamp(p)}") for p, n in files if os.path.isfile(p)] + \
         ([("F5 frame history", f"{os.path.basename(f5)}, saved {stamp(f5)}")] if f5 else [("F5 frame history", "none saved")])
     os.makedirs(os.path.join(DUMP, "reports"), exist_ok=True)
@@ -948,7 +975,7 @@ def main(argv):
     if cmd == "add": cmd_add(T, argv[2:]); return 0
     if cmd == "dist": cmd_dist(T); return 0
     if cmd == "report": cmd_report(T); return 0
-    if cmd not in ("import", "analyze", "recompile", "build", "ready", "run", "test", "capture", "replay", "accept", "check", "coverage", "verify", "recipes", "versions"):
+    if cmd not in ("import", "analyze", "recompile", "build", "ready", "run", "test", "capture", "replay", "accept", "check", "coverage", "verify", "recipes", "versions", "port"):
         usage(); return 1
     g = Game(T, cmd)
     arg3 = argv[2] if len(argv) > 2 else ""
@@ -975,6 +1002,7 @@ def main(argv):
     elif cmd == "verify": cmd_verify(g, arg3)
     elif cmd == "recipes": cmd_recipes(g)
     elif cmd == "versions": cmd_versions(g)
+    elif cmd == "port": cmd_port(g, arg3, argv[3:])
     return 0
 
 

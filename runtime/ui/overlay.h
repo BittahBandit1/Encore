@@ -22,6 +22,7 @@ extern "C" {
  * as a key cap, "\n" breaks the line. Up to three stack, newest on top; the same one again runs on instead */
 void overlay_toast_titled(const char *title, const char *body, double seconds);
 void overlay_toast(const char *msg, double seconds);   /* (no title) */
+void overlay_cycle_frame_rate(void);   /* F3 / a Steam Deck's R5: the next frame rate, with a toast */
 /* the save-data dialog (apputil.c, savedlg.h) is waiting on the player -- a list to pick from or a yes/no
  * question -- and the overlay is drawing it: window.c then routes the keyboard to the overlay instead of the
  * game, drops the mouse capture and lets go of what was held (the game is polling the dialog, not the pad) */
@@ -76,6 +77,11 @@ int overlay_wants_capture(void);
  * window.c forwards every event while the full menu is open, and only mouse and window events while
  * it's closed (the bar is pointer-only; the keys and the pad stay the game's). */
 void overlay_process_event(const SDL_Event *event);
+
+/* the touch controller (window.c, settings "touch_controls"): its elements in window coordinates, for overlay.cpp to draw */
+enum { VP_DPAD, VP_TRI, VP_CIR, VP_CRO, VP_SQU, VP_L, VP_R, VP_SEL, VP_START, VP_MENU, VP_N };
+typedef struct { float x, y, r; int kind, pressed; } VpadShape;
+int window_vpad_shapes(VpadShape *out, int max, uint32_t *dpad);   /* how many (0: hidden); dpad: held ways, 1 up 2 right 4 down 8 left */
 
 /* builds one ImGui frame (the pages below) and renders it into `target`, sized w x h pixels, with
  * SDL_GPU_LOADOP_LOAD -- drawn over whatever is already there, never clearing it. `dt_s`: seconds
